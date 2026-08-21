@@ -1,0 +1,130 @@
+databaseChangeLog:
+  - changeSet:
+      id: 049-ai-query-review
+      author: kviklet
+      changes:
+        - addColumn:
+            tableName: connection
+            columns:
+              - column:
+                  name: ai_review_mode
+                  type: VARCHAR(255)
+                  defaultValue: 'DISABLED'
+                  constraints:
+                    nullable: false
+        - createTable:
+            tableName: ai_query_review_attempt
+            columns:
+              - column:
+                  name: id
+                  type: CHAR(22)
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: execution_request_id
+                  type: CHAR(22)
+                  constraints:
+                    nullable: false
+                    foreignKeyName: fk_ai_query_review_attempt_execution_request_id
+                    references: execution_request(id)
+              - column:
+                  name: revision_fingerprint
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: summary
+                  type: TEXT
+                  constraints:
+                    nullable: true
+              - column:
+                  name: findings
+                  type: JSON
+                  constraints:
+                    nullable: true
+              - column:
+                  name: suggested_sql
+                  type: TEXT
+                  constraints:
+                    nullable: true
+              - column:
+                  name: model
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: true
+              - column:
+                  name: prompt_policy_version
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: true
+              - column:
+                  name: error_category
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: true
+              - column:
+                  name: created_at
+                  type: datetime
+                  defaultValueDate: 'now()'
+                  constraints:
+                    nullable: false
+              - column:
+                  name: completed_at
+                  type: datetime
+                  constraints:
+                    nullable: true
+        - createTable:
+            tableName: ai_query_review_override
+            columns:
+              - column:
+                  name: id
+                  type: CHAR(22)
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: execution_request_id
+                  type: CHAR(22)
+                  constraints:
+                    nullable: false
+                    foreignKeyName: fk_ai_query_review_override_execution_request_id
+                    references: execution_request(id)
+              - column:
+                  name: revision_fingerprint
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: actor_id
+                  type: VARCHAR(22)
+                  constraints:
+                    nullable: false
+                    foreignKeyName: fk_ai_query_review_override_actor_id
+                    references: user(id)
+              - column:
+                  name: reason
+                  type: TEXT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: datetime
+                  defaultValueDate: 'now()'
+                  constraints:
+                    nullable: false
+        - createIndex:
+            indexName: idx_ai_query_review_attempt_lookup
+            tableName: ai_query_review_attempt
+            columns:
+              - column:
+                  name: execution_request_id
+              - column:
+                  name: revision_fingerprint
+              - column:
+                  name: created_at
