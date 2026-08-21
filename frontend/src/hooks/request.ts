@@ -125,16 +125,21 @@ const useRequest = (id: string) => {
     })();
   }, []);
 
-  // Poll while the current-revision AI review is PENDING; stop once it settles.
+  // Poll while AI review is PENDING, or while enabled mode has no attempt yet (starting).
   useEffect(() => {
-    if (request?.aiReview?.status !== "PENDING") {
+    const mode = request?._type === "DATASOURCE" ? request.aiReviewMode : undefined;
+    const aiReviewStarting =
+      !!mode && mode !== "DISABLED" && request?.aiReview == null;
+    const shouldPoll =
+      request?.aiReview?.status === "PENDING" || aiReviewStarting;
+    if (!shouldPoll) {
       return;
     }
     const intervalId = window.setInterval(() => {
       void refreshRequest();
     }, 2000);
     return () => window.clearInterval(intervalId);
-  }, [request?.aiReview?.status]);
+  }, [request?.aiReview?.status, request?.aiReview, request?.aiReviewMode, request?._type]);
 
   const [results, setResults] = useState<ExecuteResponseResult[] | undefined>();
   const [dataLoading, setDataLoading] = useState<boolean>(false);

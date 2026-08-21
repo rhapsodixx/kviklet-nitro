@@ -50,9 +50,9 @@ function RequestReview() {
 
   const showAiReview =
     request?._type === "DATASOURCE" &&
-    request.aiReviewMode &&
-    request.aiReviewMode !== "DISABLED" &&
-    !!request.aiReview;
+    !!request.aiReviewMode &&
+    request.aiReviewMode !== "DISABLED";
+  const aiReviewStarting = showAiReview && request.aiReview == null;
 
   return (
     <div>
@@ -108,6 +108,7 @@ function RequestReview() {
                     <AiQueryReviewPanel
                       review={request.aiReview}
                       override={request.aiReviewOverride}
+                      starting={aiReviewStarting}
                       canOverride={hasPermission(
                         request.permissions,
                         "execution_request:override_ai_review",

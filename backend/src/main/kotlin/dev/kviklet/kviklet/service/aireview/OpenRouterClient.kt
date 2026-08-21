@@ -43,6 +43,13 @@ class OpenRouterClient(
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
+    companion object {
+        private const val MAX_SUMMARY_CHARS = 4_000
+        private const val MAX_FINDING_FIELD_CHARS = 2_000
+        private const val MAX_FINDINGS = 20
+        private const val TRUNCATION_MARKER = "…"
+    }
+
     fun review(system: String, user: String): OpenRouterReviewResult {
         if (!properties.isConfigured()) {
             throw OpenRouterClientException(
@@ -229,13 +236,17 @@ class OpenRouterClient(
 
             val review = objectMapper.readTree(content)
             val modelVerdict = parseVerdict(review.path("verdict").asText(null))
-            val summary = review.path("summary").asText(null)
-                ?: throw OpenRouterClientException(
-                    AiReviewErrorCategory.INVALID_RESPONSE,
-                    "Missing summary",
-                )
+            val summary = truncate(
+                review.path("summary").asText(null)
+                    ?: throw OpenRouterClientException(
+                        AiReviewErrorCategory.INVALID_RESPONSE,
+                        "Missing summary",
+                    ),
+                MAX_SUMMARY_CHARS,
+            )
             val findings = parseFindings(review.path("findings"))
             val suggestedSql = review.get("suggestedSql")?.takeUnless { it.isNull }?.asText()
+                ?.let { truncate(it, properties.maxPromptChars) }
             val verdict = AiReviewVerdictNormalizer.normalize(findings, modelVerdict)
 
             return OpenRouterReviewResult(
@@ -280,7 +291,7 @@ class OpenRouterClient(
                 "Findings must be an array",
             )
         }
-        return node.map { finding ->
+        return node.take(MAX_FINDINGS).map { finding ->
             val severityRaw = finding.path("severity").asText(null)
                 ?: throw OpenRouterClientException(
                     AiReviewErrorCategory.INVALID_RESPONSE,
@@ -296,23 +307,42 @@ class OpenRouterClient(
             }
             AiFinding(
                 severity = severity,
-                category = finding.path("category").asText(null)
-                    ?: throw OpenRouterClientException(
-                        AiReviewErrorCategory.INVALID_RESPONSE,
-                        "Finding missing category",
-                    ),
-                explanation = finding.path("explanation").asText(null)
-                    ?: throw OpenRouterClientException(
-                        AiReviewErrorCategory.INVALID_RESPONSE,
-                        "Finding missing explanation",
-                    ),
-                fix = finding.path("fix").asText(null)
-                    ?: throw OpenRouterClientException(
-                        AiReviewErrorCategory.INVALID_RESPONSE,
-                        "Finding missing fix",
-                    ),
+                category = truncate(
+                    finding.path("category").asText(null)
+                        ?: throw OpenRouterClientException(
+                            AiReviewErrorCategory.INVALID_RESPONSE,
+                            "Finding missing category",
+                        ),
+                    MAX_FINDING_FIELD_CHARS,
+                ),
+                explanation = truncate(
+                    finding.path("explanation").asText(null)
+                        ?: throw OpenRouterClientException(
+                            AiReviewErrorCategory.INVALID_RESPONSE,
+                            "Finding missing explanation",
+                        ),
+                    MAX_FINDING_FIELD_CHARS,
+                ),
+                fix = truncate(
+                    finding.path("fix").asText(null)
+                        ?: throw OpenRouterClientException(
+                            AiReviewErrorCategory.INVALID_RESPONSE,
+                            "Finding missing fix",
+                        ),
+                    MAX_FINDING_FIELD_CHARS,
+                ),
             )
         }
+    }
+
+    private fun truncate(value: String, maxChars: Int): String {
+        if (value.length <= maxChars) {
+            return value
+        }
+        if (maxChars <= 1) {
+            return TRUNCATION_MARKER.take(maxChars)
+        }
+        return value.take(maxChars - 1) + TRUNCATION_MARKER
     }
 
     private fun restClient(): RestClient {

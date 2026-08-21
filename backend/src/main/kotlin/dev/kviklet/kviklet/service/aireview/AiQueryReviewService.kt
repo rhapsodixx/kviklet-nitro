@@ -11,9 +11,11 @@ import dev.kviklet.kviklet.service.dto.ExecutionRequestDetails
 import dev.kviklet.kviklet.service.dto.ExecutionRequestId
 import dev.kviklet.kviklet.service.dto.RequestType
 import dev.kviklet.kviklet.service.dto.utcTimeNow
+import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.scheduling.annotation.Async
 import org.springframework.stereotype.Service
 import java.time.Duration
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Snapshot of AI review state for the current request revision.
@@ -30,16 +32,26 @@ data class AiReviewSnapshot(
     val gate: AiGateDecision,
 )
 
+/** Result of [AiQueryReviewService.retry]: attempt plus whether async continue should be scheduled. */
+data class AiReviewRetryOutcome(
+    val attempt: AiQueryReviewAttempt,
+    val scheduleContinue: Boolean,
+)
+
 @Service
 class AiQueryReviewService(
     private val adapter: AiQueryReviewAdapter,
     private val openRouterClient: OpenRouterClient,
     private val executionRequestAdapter: ExecutionRequestAdapter,
+    private val properties: AiReviewProperties,
 ) {
 
     companion object {
         private const val RETRY_COOLDOWN_MS = 3_000L
     }
+
+    /** Same-JVM lock to reduce duplicate PENDING races for a revision fingerprint. */
+    private val fingerprintLocks = ConcurrentHashMap<String, Any>()
 
     /** Called from async / wiring paths; HTTP auth is enforced on ExecutionRequestService. */
     @NoPolicy
@@ -47,10 +59,39 @@ class AiQueryReviewService(
         enqueueReview(details, resolveMode(details))
     }
 
-    @Async
+    @Async("aiReviewTaskExecutor")
     fun enqueueReviewAsync(executionRequestId: ExecutionRequestId) {
         val details = executionRequestAdapter.getExecutionRequestDetails(executionRequestId)
         enqueueReview(details)
+    }
+
+    /**
+     * Continues a PENDING attempt created by [retry] without holding the caller transaction
+     * across OpenRouter HTTP.
+     */
+    @Async("aiReviewTaskExecutor")
+    fun continuePendingReviewAsync(executionRequestId: ExecutionRequestId) {
+        continuePendingReview(executionRequestId)
+    }
+
+    @NoPolicy
+    fun continuePendingReview(executionRequestId: ExecutionRequestId) {
+        val details = executionRequestAdapter.getExecutionRequestDetails(executionRequestId)
+        val mode = resolveMode(details)
+        if (mode == AiReviewMode.DISABLED) {
+            return
+        }
+        val context = reviewContextOrNull(details) ?: return
+        val latest = adapter.findLatestForRevision(context.executionRequestId, context.fingerprint)
+            ?: return
+        if (latest.status != AiReviewAttemptStatus.PENDING) {
+            return
+        }
+        if (isTimedOutPending(latest)) {
+            failTimedOutPending(latest)
+            return
+        }
+        runReview(latest, context)
     }
 
     @NoPolicy
@@ -59,43 +100,73 @@ class AiQueryReviewService(
             return
         }
         val context = reviewContextOrNull(details) ?: return
-        if (adapter.hasInFlightPending(context.executionRequestId, context.fingerprint)) {
-            return
+        withFingerprintLock(context.executionRequestId, context.fingerprint) {
+            val latest = adapter.findLatestForRevision(context.executionRequestId, context.fingerprint)
+            if (latest != null && latest.status == AiReviewAttemptStatus.PENDING) {
+                if (isTimedOutPending(latest)) {
+                    failTimedOutPending(latest)
+                } else {
+                    return@withFingerprintLock
+                }
+            }
+            val (pending, createdNew) = createPendingSafely(context.executionRequestId, context.fingerprint)
+                ?: return@withFingerprintLock
+            if (!createdNew) {
+                return@withFingerprintLock
+            }
+            runReview(pending, context)
         }
-        val pending = adapter.createPending(context.executionRequestId, context.fingerprint)
-        runReview(pending, context)
     }
 
     @NoPolicy
-    fun retry(id: ExecutionRequestId): AiQueryReviewAttempt {
+    fun retry(id: ExecutionRequestId): AiReviewRetryOutcome {
         val details = executionRequestAdapter.getExecutionRequestDetails(id)
         return retry(id, resolveMode(details))
     }
 
     @NoPolicy
-    fun retry(id: ExecutionRequestId, mode: AiReviewMode): AiQueryReviewAttempt {
+    fun retry(id: ExecutionRequestId, mode: AiReviewMode): AiReviewRetryOutcome {
         if (mode == AiReviewMode.DISABLED) {
             throw IllegalArgumentException("AI review is disabled for this connection")
         }
         val details = executionRequestAdapter.getExecutionRequestDetails(id)
         val context = reviewContextOrNull(details)
             ?: throw IllegalArgumentException("Request is not eligible for AI review")
-        if (adapter.hasInFlightPending(context.executionRequestId, context.fingerprint)) {
-            return adapter.findLatestForRevision(context.executionRequestId, context.fingerprint)
+
+        return withFingerprintLock(context.executionRequestId, context.fingerprint) {
+            var skipCooldown = false
+            val latest = adapter.findLatestForRevision(context.executionRequestId, context.fingerprint)
+            if (latest != null && latest.status == AiReviewAttemptStatus.PENDING) {
+                if (isTimedOutPending(latest)) {
+                    failTimedOutPending(latest)
+                    skipCooldown = true
+                } else {
+                    return@withFingerprintLock AiReviewRetryOutcome(
+                        attempt = latest,
+                        scheduleContinue = false,
+                    )
+                }
+            }
+
+            val previous = adapter.findLatestForRevision(context.executionRequestId, context.fingerprint)
+            if (!skipCooldown &&
+                previous != null &&
+                previous.status == AiReviewAttemptStatus.FAILED &&
+                previous.completedAt != null &&
+                Duration.between(previous.completedAt, utcTimeNow()).toMillis() < RETRY_COOLDOWN_MS
+            ) {
+                throw IllegalArgumentException(
+                    "AI review retry rate limited; wait a few seconds before retrying",
+                )
+            }
+
+            val (pending, createdNew) = createPendingSafely(context.executionRequestId, context.fingerprint)
                 ?: throw IllegalStateException("In-flight AI review pending but attempt not found")
-        }
-        val latest = adapter.findLatestForRevision(context.executionRequestId, context.fingerprint)
-        if (latest != null &&
-            latest.status == AiReviewAttemptStatus.FAILED &&
-            latest.completedAt != null &&
-            Duration.between(latest.completedAt, utcTimeNow()).toMillis() < RETRY_COOLDOWN_MS
-        ) {
-            throw IllegalArgumentException(
-                "AI review retry rate limited; wait a few seconds before retrying",
+            AiReviewRetryOutcome(
+                attempt = pending,
+                scheduleContinue = createdNew && pending.status == AiReviewAttemptStatus.PENDING,
             )
         }
-        val pending = adapter.createPending(context.executionRequestId, context.fingerprint)
-        return runReview(pending, context)
     }
 
     @NoPolicy
@@ -108,8 +179,17 @@ class AiQueryReviewService(
         val context = reviewContextOrNull(details)
             ?: throw IllegalArgumentException("Request is not eligible for AI review")
         val latest = adapter.findLatestForRevision(context.executionRequestId, context.fingerprint)
-        if (latest == null || latest.status != AiReviewAttemptStatus.FAILED) {
-            throw IllegalArgumentException("Override is only allowed when the current revision AI review FAILED")
+        when {
+            latest == null -> throw IllegalArgumentException(
+                "Override is only allowed when the current revision AI review FAILED",
+            )
+            latest.status == AiReviewAttemptStatus.FAILED -> { /* ok */ }
+            latest.status == AiReviewAttemptStatus.PENDING && isTimedOutPending(latest) -> {
+                failTimedOutPending(latest)
+            }
+            else -> throw IllegalArgumentException(
+                "Override is only allowed when the current revision AI review FAILED",
+            )
         }
         return adapter.createOverride(
             executionRequestId = context.executionRequestId,
@@ -163,6 +243,57 @@ class AiQueryReviewService(
             blocksExecution = AiQueryReviewGate.blocksExecution(gate),
             gate = gate,
         )
+    }
+
+    private fun isTimedOutPending(attempt: AiQueryReviewAttempt): Boolean {
+        if (attempt.status != AiReviewAttemptStatus.PENDING) {
+            return false
+        }
+        return Duration.between(attempt.createdAt, utcTimeNow()) >= properties.timeout
+    }
+
+    private fun failTimedOutPending(attempt: AiQueryReviewAttempt): AiQueryReviewAttempt {
+        val attemptId = attempt.id
+            ?: throw IllegalStateException("Pending AI review attempt is missing an id")
+        return adapter.complete(
+            attemptId = attemptId,
+            status = AiReviewAttemptStatus.FAILED,
+            summary = null,
+            findings = null,
+            suggestedSql = null,
+            model = null,
+            promptPolicyVersion = attempt.promptPolicyVersion,
+            errorCategory = AiReviewErrorCategory.TIMEOUT.name,
+        )
+    }
+
+    /**
+     * @return attempt and whether this call created a new PENDING row; null if none found after race.
+     */
+    private fun createPendingSafely(
+        executionRequestId: ExecutionRequestId,
+        fingerprint: String,
+    ): Pair<AiQueryReviewAttempt, Boolean>? {
+        if (adapter.hasInFlightPending(executionRequestId, fingerprint)) {
+            val existing = adapter.findLatestForRevision(executionRequestId, fingerprint) ?: return null
+            return existing to false
+        }
+        return try {
+            adapter.createPending(executionRequestId, fingerprint) to true
+        } catch (_: DataIntegrityViolationException) {
+            val existing = adapter.findLatestForRevision(executionRequestId, fingerprint) ?: return null
+            existing to false
+        }
+    }
+
+    private fun <T> withFingerprintLock(
+        executionRequestId: ExecutionRequestId,
+        fingerprint: String,
+        block: () -> T,
+    ): T {
+        val key = "${executionRequestId}_$fingerprint"
+        val lock = fingerprintLocks.computeIfAbsent(key) { Any() }
+        return synchronized(lock) { block() }
     }
 
     private fun runReview(pending: AiQueryReviewAttempt, context: ReviewContext): AiQueryReviewAttempt {

@@ -19,6 +19,14 @@ const baseAttempt = (
 });
 
 describe("AiQueryReviewPanel", () => {
+  it("shows starting state when review has not been created yet", () => {
+    render(<AiQueryReviewPanel review={null} starting />);
+
+    expect(screen.getByTestId("ai-review-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("ai-review-starting")).toBeInTheDocument();
+    expect(screen.getByText(/AI review starting/i)).toBeInTheDocument();
+  });
+
   it("shows a pending spinner while the AI review is in progress", () => {
     render(
       <AiQueryReviewPanel

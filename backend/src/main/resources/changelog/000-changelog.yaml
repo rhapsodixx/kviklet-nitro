@@ -143,3 +143,6 @@ databaseChangeLog:
   - include:
       file: 049-ai-query-review.yaml
       relativeToChangelogFile: true
+  - include:
+      file: 050-ai-query-review-pending-unique.yaml
+      relativeToChangelogFile: true

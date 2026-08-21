@@ -4,13 +4,11 @@ import dev.kviklet.kviklet.db.AiQueryReviewAdapter
 import dev.kviklet.kviklet.db.ExecutionRequestAdapter
 import dev.kviklet.kviklet.db.User
 import dev.kviklet.kviklet.db.UserId
-import dev.kviklet.kviklet.service.dto.AiFinding
 import dev.kviklet.kviklet.service.dto.AiQueryReviewAttempt
 import dev.kviklet.kviklet.service.dto.AiQueryReviewOverride
 import dev.kviklet.kviklet.service.dto.AuthenticationDetails
 import dev.kviklet.kviklet.service.dto.AuthenticationType
 import dev.kviklet.kviklet.service.dto.ConnectionId
-import dev.kviklet.kviklet.service.dto.DatabaseProtocol
 import dev.kviklet.kviklet.service.dto.DatasourceConnection
 import dev.kviklet.kviklet.service.dto.DatasourceExecutionRequest
 import dev.kviklet.kviklet.service.dto.DatasourceType
@@ -18,6 +16,7 @@ import dev.kviklet.kviklet.service.dto.ExecutionRequestDetails
 import dev.kviklet.kviklet.service.dto.ExecutionRequestId
 import dev.kviklet.kviklet.service.dto.RequestType
 import dev.kviklet.kviklet.service.dto.ReviewConfig
+import dev.kviklet.kviklet.service.dto.utcTimeNow
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -27,14 +26,17 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.time.Duration
 import java.time.LocalDateTime
-import dev.kviklet.kviklet.service.dto.utcTimeNow
 
 class AiQueryReviewServiceTest {
 
     private val adapter = mockk<AiQueryReviewAdapter>()
     private val openRouterClient = mockk<OpenRouterClient>()
     private val executionRequestAdapter = mockk<ExecutionRequestAdapter>()
+    private val properties = AiReviewProperties().apply {
+        timeout = Duration.ofSeconds(60)
+    }
 
     private lateinit var service: AiQueryReviewService
 
@@ -49,7 +51,7 @@ class AiQueryReviewServiceTest {
 
     @BeforeEach
     fun setUp() {
-        service = AiQueryReviewService(adapter, openRouterClient, executionRequestAdapter)
+        service = AiQueryReviewService(adapter, openRouterClient, executionRequestAdapter, properties)
     }
 
     @Test
@@ -82,7 +84,10 @@ class AiQueryReviewServiceTest {
 
     @Test
     fun `enqueueReview dedupes in-flight PENDING`() {
-        every { adapter.hasInFlightPending(requestId, fingerprint) } returns true
+        every { adapter.findLatestForRevision(requestId, fingerprint) } returns attempt(
+            AiReviewAttemptStatus.PENDING,
+            createdAt = utcTimeNow(),
+        )
 
         service.enqueueReview(details(), AiReviewMode.MANDATORY)
 
@@ -93,6 +98,7 @@ class AiQueryReviewServiceTest {
     @Test
     fun `enqueueReview creates pending calls OpenRouter and completes`() {
         val pending = attempt(AiReviewAttemptStatus.PENDING)
+        every { adapter.findLatestForRevision(requestId, fingerprint) } returns null
         every { adapter.hasInFlightPending(requestId, fingerprint) } returns false
         every { adapter.createPending(requestId, fingerprint) } returns pending
         every { openRouterClient.review(any(), any()) } returns OpenRouterReviewResult(
@@ -136,6 +142,7 @@ class AiQueryReviewServiceTest {
     @Test
     fun `enqueueReview marks FAILED with error category on OpenRouter exception`() {
         val pending = attempt(AiReviewAttemptStatus.PENDING)
+        every { adapter.findLatestForRevision(requestId, fingerprint) } returns null
         every { adapter.hasInFlightPending(requestId, fingerprint) } returns false
         every { adapter.createPending(requestId, fingerprint) } returns pending
         every { openRouterClient.review(any(), any()) } throws OpenRouterClientException(
@@ -172,48 +179,91 @@ class AiQueryReviewServiceTest {
     }
 
     @Test
-    fun `retry creates a new attempt for current fingerprint`() {
+    fun `retry creates PENDING and schedules continue without calling OpenRouter`() {
         every { executionRequestAdapter.getExecutionRequestDetails(requestId) } returns details()
-        every { adapter.hasInFlightPending(requestId, fingerprint) } returns false
         every { adapter.findLatestForRevision(requestId, fingerprint) } returns null
+        every { adapter.hasInFlightPending(requestId, fingerprint) } returns false
         every { adapter.createPending(requestId, fingerprint) } returns attempt(AiReviewAttemptStatus.PENDING)
-        every { openRouterClient.review(any(), any()) } returns OpenRouterReviewResult(
-            model = "model",
-            verdict = AiReviewAttemptStatus.APPROVED_WITH_NOTES,
-            summary = "notes",
-            findings = listOf(
-                AiFinding(AiFindingSeverity.INFO, "style", "prefer alias", "add alias"),
-            ),
-            suggestedSql = "SELECT 1 AS one",
-        )
-        every {
-            adapter.complete(any(), any(), any(), any(), any(), any(), any(), any())
-        } returns attempt(AiReviewAttemptStatus.APPROVED_WITH_NOTES)
 
         val result = service.retry(requestId, AiReviewMode.MANDATORY)
 
-        assertEquals(AiReviewAttemptStatus.APPROVED_WITH_NOTES, result.status)
+        assertEquals(AiReviewAttemptStatus.PENDING, result.attempt.status)
+        assertTrue(result.scheduleContinue)
         verify(exactly = 1) { adapter.createPending(requestId, fingerprint) }
+        verify(exactly = 0) { openRouterClient.review(any(), any()) }
     }
 
     @Test
     fun `retry returns in-flight pending attempt without creating another`() {
-        val pending = attempt(AiReviewAttemptStatus.PENDING)
+        val pending = attempt(AiReviewAttemptStatus.PENDING, createdAt = utcTimeNow())
         every { executionRequestAdapter.getExecutionRequestDetails(requestId) } returns details()
-        every { adapter.hasInFlightPending(requestId, fingerprint) } returns true
         every { adapter.findLatestForRevision(requestId, fingerprint) } returns pending
 
         val result = service.retry(requestId, AiReviewMode.MANDATORY)
 
-        assertEquals(AiReviewAttemptStatus.PENDING, result.status)
+        assertEquals(AiReviewAttemptStatus.PENDING, result.attempt.status)
+        assertFalse(result.scheduleContinue)
         verify(exactly = 0) { adapter.createPending(any(), any()) }
         verify(exactly = 0) { openRouterClient.review(any(), any()) }
     }
 
     @Test
+    fun `retry times out stuck PENDING then creates a new attempt`() {
+        val stuck = attempt(
+            status = AiReviewAttemptStatus.PENDING,
+            createdAt = utcTimeNow().minusSeconds(61),
+        )
+        val failed = attempt(
+            status = AiReviewAttemptStatus.FAILED,
+            errorCategory = AiReviewErrorCategory.TIMEOUT.name,
+            completedAt = utcTimeNow(),
+        )
+        val newPending = attempt(AiReviewAttemptStatus.PENDING, id = "attempt-2")
+
+        every { executionRequestAdapter.getExecutionRequestDetails(requestId) } returns details()
+        every { adapter.findLatestForRevision(requestId, fingerprint) } returnsMany listOf(
+            stuck,
+            failed,
+            failed,
+            newPending,
+        )
+        every {
+            adapter.complete(
+                attemptId = "attempt-1",
+                status = AiReviewAttemptStatus.FAILED,
+                summary = null,
+                findings = null,
+                suggestedSql = null,
+                model = null,
+                promptPolicyVersion = null,
+                errorCategory = AiReviewErrorCategory.TIMEOUT.name,
+            )
+        } returns failed
+        every { adapter.hasInFlightPending(requestId, fingerprint) } returns false
+        every { adapter.createPending(requestId, fingerprint) } returns newPending
+
+        val result = service.retry(requestId, AiReviewMode.MANDATORY)
+
+        assertEquals("attempt-2", result.attempt.id)
+        assertTrue(result.scheduleContinue)
+        verify(exactly = 1) {
+            adapter.complete(
+                attemptId = "attempt-1",
+                status = AiReviewAttemptStatus.FAILED,
+                summary = null,
+                findings = null,
+                suggestedSql = null,
+                model = null,
+                promptPolicyVersion = null,
+                errorCategory = AiReviewErrorCategory.TIMEOUT.name,
+            )
+        }
+        verify(exactly = 1) { adapter.createPending(requestId, fingerprint) }
+    }
+
+    @Test
     fun `retry rejects when last FAILED completed less than 3 seconds ago`() {
         every { executionRequestAdapter.getExecutionRequestDetails(requestId) } returns details()
-        every { adapter.hasInFlightPending(requestId, fingerprint) } returns false
         every { adapter.findLatestForRevision(requestId, fingerprint) } returns attempt(
             status = AiReviewAttemptStatus.FAILED,
             completedAt = utcTimeNow(),
@@ -230,26 +280,17 @@ class AiQueryReviewServiceTest {
     @Test
     fun `retry allows when last FAILED completed more than 3 seconds ago`() {
         every { executionRequestAdapter.getExecutionRequestDetails(requestId) } returns details()
-        every { adapter.hasInFlightPending(requestId, fingerprint) } returns false
         every { adapter.findLatestForRevision(requestId, fingerprint) } returns attempt(
             status = AiReviewAttemptStatus.FAILED,
             completedAt = utcTimeNow().minusSeconds(4),
         )
+        every { adapter.hasInFlightPending(requestId, fingerprint) } returns false
         every { adapter.createPending(requestId, fingerprint) } returns attempt(AiReviewAttemptStatus.PENDING)
-        every { openRouterClient.review(any(), any()) } returns OpenRouterReviewResult(
-            model = "model",
-            verdict = AiReviewAttemptStatus.APPROVED,
-            summary = "ok",
-            findings = emptyList(),
-            suggestedSql = null,
-        )
-        every {
-            adapter.complete(any(), any(), any(), any(), any(), any(), any(), any())
-        } returns attempt(AiReviewAttemptStatus.APPROVED)
 
         val result = service.retry(requestId, AiReviewMode.MANDATORY)
 
-        assertEquals(AiReviewAttemptStatus.APPROVED, result.status)
+        assertEquals(AiReviewAttemptStatus.PENDING, result.attempt.status)
+        assertTrue(result.scheduleContinue)
         verify(exactly = 1) { adapter.createPending(requestId, fingerprint) }
     }
 
@@ -292,6 +333,71 @@ class AiQueryReviewServiceTest {
 
         assertEquals("override-1", result.id)
         assertEquals(fingerprint, result.revisionFingerprint)
+    }
+
+    @Test
+    fun `overrideFailed treats timed-out PENDING as FAILED`() {
+        val stuck = attempt(
+            status = AiReviewAttemptStatus.PENDING,
+            createdAt = utcTimeNow().minusSeconds(90),
+        )
+        every { executionRequestAdapter.getExecutionRequestDetails(requestId) } returns details()
+        every { adapter.findLatestForRevision(requestId, fingerprint) } returns stuck
+        every {
+            adapter.complete(
+                attemptId = "attempt-1",
+                status = AiReviewAttemptStatus.FAILED,
+                summary = null,
+                findings = null,
+                suggestedSql = null,
+                model = null,
+                promptPolicyVersion = null,
+                errorCategory = AiReviewErrorCategory.TIMEOUT.name,
+            )
+        } returns attempt(
+            status = AiReviewAttemptStatus.FAILED,
+            errorCategory = AiReviewErrorCategory.TIMEOUT.name,
+            completedAt = utcTimeNow(),
+        )
+        every {
+            adapter.createOverride(requestId, fingerprint, "admin-1", "stuck review")
+        } returns AiQueryReviewOverride(
+            id = "override-2",
+            executionRequestId = requestId,
+            revisionFingerprint = fingerprint,
+            actorId = "admin-1",
+            reason = "stuck review",
+        )
+
+        val result = service.overrideFailed(requestId, "admin-1", "stuck review")
+
+        assertEquals("override-2", result.id)
+        verify(exactly = 1) {
+            adapter.complete(
+                attemptId = "attempt-1",
+                status = AiReviewAttemptStatus.FAILED,
+                summary = null,
+                findings = null,
+                suggestedSql = null,
+                model = null,
+                promptPolicyVersion = null,
+                errorCategory = AiReviewErrorCategory.TIMEOUT.name,
+            )
+        }
+    }
+
+    @Test
+    fun `overrideFailed rejects fresh PENDING`() {
+        every { executionRequestAdapter.getExecutionRequestDetails(requestId) } returns details()
+        every { adapter.findLatestForRevision(requestId, fingerprint) } returns attempt(
+            status = AiReviewAttemptStatus.PENDING,
+            createdAt = utcTimeNow(),
+        )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            service.overrideFailed(requestId, "admin-1", "too soon")
+        }
+        verify(exactly = 0) { adapter.createOverride(any(), any(), any(), any()) }
     }
 
     @Test
@@ -343,6 +449,7 @@ class AiQueryReviewServiceTest {
     fun `enqueueReviewAsync loads details and enqueues using connection mode`() {
         every { executionRequestAdapter.getExecutionRequestDetails(requestId) } returns
             details(aiReviewMode = AiReviewMode.OPTIONAL)
+        every { adapter.findLatestForRevision(requestId, fingerprint) } returns null
         every { adapter.hasInFlightPending(requestId, fingerprint) } returns false
         every { adapter.createPending(requestId, fingerprint) } returns attempt(AiReviewAttemptStatus.PENDING)
         every { openRouterClient.review(any(), any()) } returns OpenRouterReviewResult(
@@ -359,6 +466,30 @@ class AiQueryReviewServiceTest {
         service.enqueueReviewAsync(requestId)
 
         verify(exactly = 1) { adapter.createPending(requestId, fingerprint) }
+        verify(exactly = 1) { openRouterClient.review(any(), any()) }
+    }
+
+    @Test
+    fun `continuePendingReview runs OpenRouter for current PENDING`() {
+        every { executionRequestAdapter.getExecutionRequestDetails(requestId) } returns
+            details(aiReviewMode = AiReviewMode.MANDATORY)
+        every { adapter.findLatestForRevision(requestId, fingerprint) } returns attempt(
+            AiReviewAttemptStatus.PENDING,
+            createdAt = utcTimeNow(),
+        )
+        every { openRouterClient.review(any(), any()) } returns OpenRouterReviewResult(
+            model = "model",
+            verdict = AiReviewAttemptStatus.APPROVED,
+            summary = "ok",
+            findings = emptyList(),
+            suggestedSql = null,
+        )
+        every {
+            adapter.complete(any(), any(), any(), any(), any(), any(), any(), any())
+        } returns attempt(AiReviewAttemptStatus.APPROVED)
+
+        service.continuePendingReview(requestId)
+
         verify(exactly = 1) { openRouterClient.review(any(), any()) }
     }
 
@@ -421,12 +552,15 @@ class AiQueryReviewServiceTest {
         status: AiReviewAttemptStatus,
         errorCategory: String? = null,
         completedAt: LocalDateTime? = null,
+        createdAt: LocalDateTime = utcTimeNow(),
+        id: String = "attempt-1",
     ) = AiQueryReviewAttempt(
-        id = "attempt-1",
+        id = id,
         executionRequestId = requestId,
         revisionFingerprint = fingerprint,
         status = status,
         errorCategory = errorCategory,
+        createdAt = createdAt,
         completedAt = completedAt,
     )
 }

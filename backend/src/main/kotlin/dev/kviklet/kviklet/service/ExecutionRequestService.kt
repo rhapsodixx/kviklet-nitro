@@ -497,10 +497,13 @@ class ExecutionRequestService(
             CommentPayload(comment = request.comment),
         )
 
-    @Transactional
+    // Intentionally not @Transactional: retry must not hold a DB transaction across OpenRouter HTTP.
     @Policy(Permission.EXECUTION_REQUEST_GET)
     fun retryAiReview(id: ExecutionRequestId): ExecutionRequestDetails {
-        aiQueryReviewService.retry(id)
+        val outcome = aiQueryReviewService.retry(id)
+        if (outcome.scheduleContinue) {
+            aiQueryReviewService.continuePendingReviewAsync(id)
+        }
         return ensureMaterializedStatuses(executionRequestAdapter.getExecutionRequestDetails(id))
     }
 

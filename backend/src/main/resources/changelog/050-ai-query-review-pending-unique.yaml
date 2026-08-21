@@ -1,0 +1,11 @@
+databaseChangeLog:
+  - changeSet:
+      id: 050-ai-query-review-pending-unique
+      author: kviklet
+      dbms: postgresql
+      changes:
+        - sql:
+            sql: >
+              CREATE UNIQUE INDEX uq_ai_query_review_attempt_pending_revision
+              ON ai_query_review_attempt (execution_request_id, revision_fingerprint)
+              WHERE status = 'PENDING'

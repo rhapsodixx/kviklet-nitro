@@ -148,6 +148,45 @@ class OpenRouterClientTest {
         assertEquals(2, server.requestCount)
     }
 
+    @Test
+    fun `truncates oversized summary findings and suggestedSql`() {
+        val longSummary = "S".repeat(5_000)
+        val longField = "F".repeat(3_000)
+        val longSql = "Q".repeat(60_000)
+        val findings = (1..25).map { i ->
+            mapOf(
+                "severity" to "INFO",
+                "category" to longField,
+                "explanation" to longField,
+                "fix" to longField,
+            )
+        }
+        val content = objectMapper.writeValueAsString(
+            mapOf(
+                "verdict" to "APPROVED",
+                "summary" to longSummary,
+                "findings" to findings,
+                "suggestedSql" to longSql,
+            ),
+        )
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(openRouterEnvelope(content)),
+        )
+
+        val result = client.review("system", "user")
+
+        assertEquals(4_000, result.summary.length)
+        assertTrue(result.summary.endsWith("…"))
+        assertEquals(20, result.findings.size)
+        assertEquals(2_000, result.findings[0].category.length)
+        assertTrue(result.findings[0].category.endsWith("…"))
+        assertEquals(properties.maxPromptChars, result.suggestedSql!!.length)
+        assertTrue(result.suggestedSql!!.endsWith("…"))
+    }
+
     private fun reviewJson(): String = """
         {
           "verdict": "APPROVED",

@@ -110,12 +110,14 @@ function RequestSidebar({
       </div>
       {request.aiReviewMode &&
         request.aiReviewMode !== "DISABLED" &&
-        request.aiReview && (
+        (request.aiReview ? (
           <AiReviewBadge
             status={request.aiReview.status}
             overridden={!!request.aiReviewOverride}
           />
-        )}
+        ) : (
+          <AiReviewBadge status="PENDING" />
+        ))}
       {children}
       <SidebarDivider />
       <div className="grid grid-cols-2 gap-4 md:flex md:flex-col">

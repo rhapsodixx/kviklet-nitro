@@ -79,6 +79,7 @@ function AiQueryReviewPanel({
   review,
   override,
   canOverride = false,
+  starting = false,
   onRetry,
   onOverride,
   onEditStatement,
@@ -86,12 +87,42 @@ function AiQueryReviewPanel({
   review: AiReviewAttempt | null | undefined;
   override?: AiReviewOverride | null;
   canOverride?: boolean;
+  /** True when mode is enabled but no attempt exists yet (enqueue in flight). */
+  starting?: boolean;
   onRetry?: () => Promise<void>;
   onOverride?: (reason: string) => Promise<void>;
   onEditStatement?: () => void;
 }) {
   const [overrideReason, setOverrideReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  if (!review && starting) {
+    return (
+      <section
+        className="mb-4 rounded-md border border-slate-200 p-4 dark:border-slate-700 dark:bg-slate-900/40"
+        data-testid="ai-review-panel"
+      >
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+            AI Query Review
+          </h2>
+          <span
+            className={`text-sm font-medium ${statusTone("PENDING")}`}
+            data-testid="ai-review-status"
+          >
+            {statusLabel("PENDING")}
+          </span>
+        </div>
+        <div
+          className="mt-4 flex items-center gap-3 text-sm text-slate-600 dark:text-slate-300"
+          data-testid="ai-review-starting"
+        >
+          <Spinner size="sm" />
+          <span>AI review starting…</span>
+        </div>
+      </section>
+    );
+  }
 
   if (!review) {
     return null;
