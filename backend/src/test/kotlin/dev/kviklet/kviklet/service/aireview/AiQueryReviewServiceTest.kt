@@ -27,6 +27,8 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.time.LocalDateTime
+import dev.kviklet.kviklet.service.dto.utcTimeNow
 
 class AiQueryReviewServiceTest {
 
@@ -173,6 +175,7 @@ class AiQueryReviewServiceTest {
     fun `retry creates a new attempt for current fingerprint`() {
         every { executionRequestAdapter.getExecutionRequestDetails(requestId) } returns details()
         every { adapter.hasInFlightPending(requestId, fingerprint) } returns false
+        every { adapter.findLatestForRevision(requestId, fingerprint) } returns null
         every { adapter.createPending(requestId, fingerprint) } returns attempt(AiReviewAttemptStatus.PENDING)
         every { openRouterClient.review(any(), any()) } returns OpenRouterReviewResult(
             model = "model",
@@ -190,6 +193,63 @@ class AiQueryReviewServiceTest {
         val result = service.retry(requestId, AiReviewMode.MANDATORY)
 
         assertEquals(AiReviewAttemptStatus.APPROVED_WITH_NOTES, result.status)
+        verify(exactly = 1) { adapter.createPending(requestId, fingerprint) }
+    }
+
+    @Test
+    fun `retry returns in-flight pending attempt without creating another`() {
+        val pending = attempt(AiReviewAttemptStatus.PENDING)
+        every { executionRequestAdapter.getExecutionRequestDetails(requestId) } returns details()
+        every { adapter.hasInFlightPending(requestId, fingerprint) } returns true
+        every { adapter.findLatestForRevision(requestId, fingerprint) } returns pending
+
+        val result = service.retry(requestId, AiReviewMode.MANDATORY)
+
+        assertEquals(AiReviewAttemptStatus.PENDING, result.status)
+        verify(exactly = 0) { adapter.createPending(any(), any()) }
+        verify(exactly = 0) { openRouterClient.review(any(), any()) }
+    }
+
+    @Test
+    fun `retry rejects when last FAILED completed less than 3 seconds ago`() {
+        every { executionRequestAdapter.getExecutionRequestDetails(requestId) } returns details()
+        every { adapter.hasInFlightPending(requestId, fingerprint) } returns false
+        every { adapter.findLatestForRevision(requestId, fingerprint) } returns attempt(
+            status = AiReviewAttemptStatus.FAILED,
+            completedAt = utcTimeNow(),
+        )
+
+        val ex = assertThrows(IllegalArgumentException::class.java) {
+            service.retry(requestId, AiReviewMode.MANDATORY)
+        }
+
+        assertTrue(ex.message!!.contains("rate limited"))
+        verify(exactly = 0) { adapter.createPending(any(), any()) }
+    }
+
+    @Test
+    fun `retry allows when last FAILED completed more than 3 seconds ago`() {
+        every { executionRequestAdapter.getExecutionRequestDetails(requestId) } returns details()
+        every { adapter.hasInFlightPending(requestId, fingerprint) } returns false
+        every { adapter.findLatestForRevision(requestId, fingerprint) } returns attempt(
+            status = AiReviewAttemptStatus.FAILED,
+            completedAt = utcTimeNow().minusSeconds(4),
+        )
+        every { adapter.createPending(requestId, fingerprint) } returns attempt(AiReviewAttemptStatus.PENDING)
+        every { openRouterClient.review(any(), any()) } returns OpenRouterReviewResult(
+            model = "model",
+            verdict = AiReviewAttemptStatus.APPROVED,
+            summary = "ok",
+            findings = emptyList(),
+            suggestedSql = null,
+        )
+        every {
+            adapter.complete(any(), any(), any(), any(), any(), any(), any(), any())
+        } returns attempt(AiReviewAttemptStatus.APPROVED)
+
+        val result = service.retry(requestId, AiReviewMode.MANDATORY)
+
+        assertEquals(AiReviewAttemptStatus.APPROVED, result.status)
         verify(exactly = 1) { adapter.createPending(requestId, fingerprint) }
     }
 
@@ -360,11 +420,13 @@ class AiQueryReviewServiceTest {
     private fun attempt(
         status: AiReviewAttemptStatus,
         errorCategory: String? = null,
+        completedAt: LocalDateTime? = null,
     ) = AiQueryReviewAttempt(
         id = "attempt-1",
         executionRequestId = requestId,
         revisionFingerprint = fingerprint,
         status = status,
         errorCategory = errorCategory,
+        completedAt = completedAt,
     )
 }

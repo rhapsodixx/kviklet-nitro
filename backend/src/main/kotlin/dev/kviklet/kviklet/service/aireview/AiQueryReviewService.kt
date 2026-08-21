@@ -9,8 +9,10 @@ import dev.kviklet.kviklet.service.dto.DatasourceType
 import dev.kviklet.kviklet.service.dto.ExecutionRequestDetails
 import dev.kviklet.kviklet.service.dto.ExecutionRequestId
 import dev.kviklet.kviklet.service.dto.RequestType
+import dev.kviklet.kviklet.service.dto.utcTimeNow
 import org.springframework.scheduling.annotation.Async
 import org.springframework.stereotype.Service
+import java.time.Duration
 
 /**
  * Snapshot of AI review state for the current request revision.
@@ -33,6 +35,10 @@ class AiQueryReviewService(
     private val openRouterClient: OpenRouterClient,
     private val executionRequestAdapter: ExecutionRequestAdapter,
 ) {
+
+    companion object {
+        private const val RETRY_COOLDOWN_MS = 3_000L
+    }
 
     fun enqueueReview(details: ExecutionRequestDetails) {
         enqueueReview(details, resolveMode(details))
@@ -71,6 +77,16 @@ class AiQueryReviewService(
         if (adapter.hasInFlightPending(context.executionRequestId, context.fingerprint)) {
             return adapter.findLatestForRevision(context.executionRequestId, context.fingerprint)
                 ?: throw IllegalStateException("In-flight AI review pending but attempt not found")
+        }
+        val latest = adapter.findLatestForRevision(context.executionRequestId, context.fingerprint)
+        if (latest != null &&
+            latest.status == AiReviewAttemptStatus.FAILED &&
+            latest.completedAt != null &&
+            Duration.between(latest.completedAt, utcTimeNow()).toMillis() < RETRY_COOLDOWN_MS
+        ) {
+            throw IllegalArgumentException(
+                "AI review retry rate limited; wait a few seconds before retrying",
+            )
         }
         val pending = adapter.createPending(context.executionRequestId, context.fingerprint)
         return runReview(pending, context)

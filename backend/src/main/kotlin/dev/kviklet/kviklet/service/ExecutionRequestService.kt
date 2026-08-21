@@ -497,6 +497,20 @@ class ExecutionRequestService(
             CommentPayload(comment = request.comment),
         )
 
+    @Transactional
+    @Policy(Permission.EXECUTION_REQUEST_GET)
+    fun retryAiReview(id: ExecutionRequestId): ExecutionRequestDetails {
+        aiQueryReviewService.retry(id)
+        return ensureMaterializedStatuses(executionRequestAdapter.getExecutionRequestDetails(id))
+    }
+
+    @Transactional
+    @Policy(Permission.EXECUTION_REQUEST_OVERRIDE_AI_REVIEW)
+    fun overrideAiReview(id: ExecutionRequestId, actorId: String, reason: String): ExecutionRequestDetails {
+        aiQueryReviewService.overrideFailed(id, actorId, reason)
+        return ensureMaterializedStatuses(executionRequestAdapter.getExecutionRequestDetails(id))
+    }
+
     private fun executeDatasourceRequest(
         id: ExecutionRequestId,
         executionRequest: ExecutionRequestDetails,
