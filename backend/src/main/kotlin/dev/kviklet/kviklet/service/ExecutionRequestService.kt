@@ -19,6 +19,8 @@ import dev.kviklet.kviklet.security.Permission
 import dev.kviklet.kviklet.security.PermissionResolver
 import dev.kviklet.kviklet.security.Policy
 import dev.kviklet.kviklet.security.UserDetailsWithId
+import dev.kviklet.kviklet.service.aireview.AiGateDecision
+import dev.kviklet.kviklet.service.aireview.AiQueryReviewService
 import dev.kviklet.kviklet.service.dto.AuthenticationDetails
 import dev.kviklet.kviklet.service.dto.ConnectionId
 import dev.kviklet.kviklet.service.dto.DBExecutionResult
@@ -84,6 +86,7 @@ class ExecutionRequestService(
     private val dryRunValidator: DryRunValidator,
     private val roleAdapter: dev.kviklet.kviklet.db.RoleAdapter,
     private val permissionResolver: PermissionResolver,
+    private val aiQueryReviewService: AiQueryReviewService,
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     private val proxies = mutableListOf<ExecutionProxy>()
@@ -131,6 +134,7 @@ class ExecutionRequestService(
         RequestCreatedEvent.fromRequest(executionRequestDetails).let {
             applicationEventPublisher.publishEvent(it)
         }
+        publishRevisionChangedIfEligible(executionRequestDetails)
         return executionRequestDetails
     }
 
@@ -221,6 +225,7 @@ class ExecutionRequestService(
         val connection = connectionService.getDatasourceConnection(executionRequest.request.connection.id)
 
         executionRequest.raiseIfNotExecutable()
+        executionRequest.raiseIfAiReviewBlocksExecution()
 
         if (connection !is DatasourceConnection) {
             throw IllegalArgumentException("Only Datasource connections can be dumped")
@@ -349,6 +354,7 @@ class ExecutionRequestService(
             command = request.command,
             temporaryAccessDuration = request.temporaryAccessDuration?.let { Duration.ofMinutes(it) },
         )
+        publishRevisionChangedIfEligible(result)
         return resolveRoles(result)
     }
 
@@ -718,6 +724,7 @@ class ExecutionRequestService(
                 if (reviewStatus != ReviewStatus.APPROVED) {
                     throw InvalidReviewException("This request has not been approved yet!")
                 }
+                executionRequest.raiseIfAiReviewBlocksExecution()
             }
             // Execute dry run
             return executeDatasourceRequestDryRun(
@@ -729,6 +736,7 @@ class ExecutionRequestService(
         } else {
             // Normal execution - always requires approval
             executionRequest.raiseIfNotExecutable()
+            executionRequest.raiseIfAiReviewBlocksExecution()
             return when (connection) {
                 is DatasourceConnection -> {
                     executeDatasourceRequest(id, executionRequest, connection, query, userId)
@@ -765,6 +773,7 @@ class ExecutionRequestService(
             )
         }
         executionRequest.raiseIfNotExecutable()
+        executionRequest.raiseIfAiReviewBlocksExecution()
 
         val result = executeDatasourceRequest(id, executionRequest, connection, query, userId, isDownload = true)
 
@@ -946,6 +955,24 @@ class ExecutionRequestService(
         }
     }
 
+
+    private fun publishRevisionChangedIfEligible(details: ExecutionRequestDetails) {
+        val request = details.request
+        if (request !is DatasourceExecutionRequest) {
+            return
+        }
+        if (request.type != RequestType.SingleExecution) {
+            return
+        }
+        val id = request.id ?: return
+        applicationEventPublisher.publishEvent(RequestRevisionChangedEvent(id))
+    }
+
+    private fun ExecutionRequestDetails.raiseIfAiReviewBlocksExecution() {
+        raiseIfAiReviewBlocks(aiQueryReviewService)
+    }
+
+
     private fun cleanUpProxies() {
         val now = utcTimeNow()
         val expiredProxies = proxies.filter { it.startTime.plusMinutes(60) < now }
@@ -1080,6 +1107,32 @@ fun ExecutionRequestDetails.raiseIfNotExecutable() {
         throw InvalidReviewException("This request has not been approved yet!")
     }
     raiseIfAlreadyExecuted()
+}
+
+/**
+ * Blocks Mandatory AI review paths until the current revision is allowed.
+ * Does not change [ExecutionRequestDetails.resolveReviewStatus].
+ */
+fun ExecutionRequestDetails.raiseIfAiReviewBlocks(aiQueryReviewService: AiQueryReviewService) {
+    val snapshot = aiQueryReviewService.currentSnapshot(this)
+    if (!snapshot.blocksExecution) {
+        return
+    }
+    when (snapshot.gate) {
+        AiGateDecision.BLOCKED_PENDING ->
+            throw InvalidReviewException("AI query review is still pending")
+        AiGateDecision.BLOCKED_REJECTED ->
+            throw InvalidReviewException("AI query review rejected this revision")
+        AiGateDecision.BLOCKED_FAILED ->
+            throw InvalidReviewException(
+                "AI query review failed; retry or request an admin override",
+            )
+        AiGateDecision.BLOCKED_MISSING ->
+            throw InvalidReviewException("AI query review has not completed")
+        AiGateDecision.ALLOWED,
+        AiGateDecision.NOT_APPLICABLE,
+        -> Unit
+    }
 }
 
 fun ExecutionRequestDetails.raiseIfAlreadyExecuted() {

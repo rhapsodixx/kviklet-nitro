@@ -9,13 +9,14 @@ import dev.kviklet.kviklet.service.dto.DatasourceType
 import dev.kviklet.kviklet.service.dto.ExecutionRequestDetails
 import dev.kviklet.kviklet.service.dto.ExecutionRequestId
 import dev.kviklet.kviklet.service.dto.RequestType
+import org.springframework.scheduling.annotation.Async
 import org.springframework.stereotype.Service
 
 /**
  * Snapshot of AI review state for the current request revision.
  *
- * Callers read [DatasourceConnection.aiReviewMode] and pass it to
- * [AiQueryReviewService.enqueueReview] / [currentSnapshot] / [retry].
+ * Mode is read from [DatasourceConnection.aiReviewMode] unless an explicit
+ * [AiReviewMode] overload is used (tests / callers that already resolved mode).
  */
 data class AiReviewSnapshot(
     val mode: AiReviewMode,
@@ -33,6 +34,16 @@ class AiQueryReviewService(
     private val executionRequestAdapter: ExecutionRequestAdapter,
 ) {
 
+    fun enqueueReview(details: ExecutionRequestDetails) {
+        enqueueReview(details, resolveMode(details))
+    }
+
+    @Async
+    fun enqueueReviewAsync(executionRequestId: ExecutionRequestId) {
+        val details = executionRequestAdapter.getExecutionRequestDetails(executionRequestId)
+        enqueueReview(details)
+    }
+
     fun enqueueReview(details: ExecutionRequestDetails, mode: AiReviewMode) {
         if (mode == AiReviewMode.DISABLED) {
             return
@@ -43,6 +54,11 @@ class AiQueryReviewService(
         }
         val pending = adapter.createPending(context.executionRequestId, context.fingerprint)
         runReview(pending, context)
+    }
+
+    fun retry(id: ExecutionRequestId): AiQueryReviewAttempt {
+        val details = executionRequestAdapter.getExecutionRequestDetails(id)
+        return retry(id, resolveMode(details))
     }
 
     fun retry(id: ExecutionRequestId, mode: AiReviewMode): AiQueryReviewAttempt {
@@ -79,6 +95,9 @@ class AiQueryReviewService(
             reason = trimmedReason,
         )
     }
+
+    fun currentSnapshot(details: ExecutionRequestDetails): AiReviewSnapshot =
+        currentSnapshot(details, resolveMode(details))
 
     fun currentSnapshot(details: ExecutionRequestDetails, mode: AiReviewMode): AiReviewSnapshot {
         val context = reviewContextOrNull(details)
@@ -165,6 +184,11 @@ class AiQueryReviewService(
                 errorCategory = AiReviewErrorCategory.INVALID_RESPONSE.name,
             )
         }
+    }
+
+    private fun resolveMode(details: ExecutionRequestDetails): AiReviewMode {
+        val connection = (details.request as? DatasourceExecutionRequest)?.connection
+        return connection?.aiReviewMode ?: AiReviewMode.DISABLED
     }
 
     private fun reviewContextOrNull(details: ExecutionRequestDetails): ReviewContext? {

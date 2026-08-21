@@ -279,10 +279,46 @@ class AiQueryReviewServiceTest {
         assertEquals("override-1", snapshot.override?.id)
     }
 
+    @Test
+    fun `enqueueReviewAsync loads details and enqueues using connection mode`() {
+        every { executionRequestAdapter.getExecutionRequestDetails(requestId) } returns
+            details(aiReviewMode = AiReviewMode.OPTIONAL)
+        every { adapter.hasInFlightPending(requestId, fingerprint) } returns false
+        every { adapter.createPending(requestId, fingerprint) } returns attempt(AiReviewAttemptStatus.PENDING)
+        every { openRouterClient.review(any(), any()) } returns OpenRouterReviewResult(
+            model = "model",
+            verdict = AiReviewAttemptStatus.APPROVED,
+            summary = "ok",
+            findings = emptyList(),
+            suggestedSql = null,
+        )
+        every {
+            adapter.complete(any(), any(), any(), any(), any(), any(), any(), any())
+        } returns attempt(AiReviewAttemptStatus.APPROVED)
+
+        service.enqueueReviewAsync(requestId)
+
+        verify(exactly = 1) { adapter.createPending(requestId, fingerprint) }
+        verify(exactly = 1) { openRouterClient.review(any(), any()) }
+    }
+
+    @Test
+    fun `currentSnapshot without mode reads aiReviewMode from connection`() {
+        every { adapter.findLatestForRevision(requestId, fingerprint) } returns
+            attempt(AiReviewAttemptStatus.PENDING)
+        every { adapter.findLatestOverride(requestId, fingerprint) } returns null
+
+        val snapshot = service.currentSnapshot(details(aiReviewMode = AiReviewMode.MANDATORY))
+
+        assertEquals(AiGateDecision.BLOCKED_PENDING, snapshot.gate)
+        assertEquals(AiReviewMode.MANDATORY, snapshot.mode)
+    }
+
     private fun details(
         type: RequestType = RequestType.SingleExecution,
         engine: DatasourceType = DatasourceType.POSTGRESQL,
         statement: String? = "SELECT 1",
+        aiReviewMode: AiReviewMode = AiReviewMode.DISABLED,
     ): ExecutionRequestDetails {
         val connection = DatasourceConnection(
             id = ConnectionId("conn-1"),
@@ -304,6 +340,7 @@ class AiQueryReviewServiceTest {
             storeResults = false,
             dryRunEnabled = false,
             dryRunRequiresApproval = false,
+            aiReviewMode = aiReviewMode,
         )
         val request = DatasourceExecutionRequest(
             id = requestId,
