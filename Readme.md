@@ -421,12 +421,14 @@ Only query metadata is sent to the model (SQL statement, title, description, and
 Automated coverage for AI Query Review is unit/component focused (no Playwright e2e stub for OpenRouter in this suite):
 
 ```bash
-cd backend && ./gradlew test --tests '*aireview*'
+cd backend && ./gradlew test --tests '*aireview*' --tests '*AiReview*'
 cd frontend && npm run test -- AiQueryReview
 ```
 
-- **Backend `*aireview*`**: gate logic, OpenRouter client (MockWebServer), service accept/reject/fail/override paths, connection validation, API mapping, and create/edit wiring.
-- **Frontend Vitest `AiQueryReview`**: panel states (pending / approved / rejected / failed), badge, retry/override/edit CTAs.
+Backend tests require JDK 21.
+
+- **Backend `*aireview*` / `*AiReview*`**: gate logic, OpenRouter client (MockWebServer), service accept/reject/fail/override paths, connection validation, API mapping, and create/edit wiring.
+- **Frontend Vitest `AiQueryReview`**: panel states (pending / approved / rejected / failed), retry/override/edit CTAs (`AiReviewBadge` is not covered by a dedicated test).
 
 A full `@SpringBootTest` + Testcontainers path is not required for local/CI of this feature when Docker is unavailable or incompatible; rely on the suites above. Heavy Playwright e2e against a live OpenRouter mock is intentionally omitted.
 
