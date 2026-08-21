@@ -1,60 +1,135 @@
 package dev.kviklet.kviklet.service.aireview
 
 import dev.kviklet.kviklet.db.AiQueryReviewAdapter
-import dev.kviklet.kviklet.helper.ConnectionHelper
-import dev.kviklet.kviklet.helper.ExecutionRequestHelper
-import dev.kviklet.kviklet.helper.UserHelper
+import dev.kviklet.kviklet.db.AiQueryReviewAttemptEntity
+import dev.kviklet.kviklet.db.AiQueryReviewAttemptRepository
+import dev.kviklet.kviklet.db.AiQueryReviewOverrideEntity
+import dev.kviklet.kviklet.db.AiQueryReviewOverrideRepository
+import dev.kviklet.kviklet.db.ExecutionRequestEntity
+import dev.kviklet.kviklet.db.ExecutionRequestRepository
+import dev.kviklet.kviklet.db.UserEntity
+import dev.kviklet.kviklet.db.UserRepository
 import dev.kviklet.kviklet.service.dto.AiFinding
 import dev.kviklet.kviklet.service.dto.DatasourceType
 import dev.kviklet.kviklet.service.dto.ExecutionRequestId
 import dev.kviklet.kviklet.service.dto.RequestType
-import org.junit.jupiter.api.AfterEach
+import io.mockk.every
+import io.mockk.mockk
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.boot.test.context.SpringBootTest
-import org.springframework.test.context.ActiveProfiles
+import java.util.Optional
+import java.util.concurrent.atomic.AtomicInteger
 
-@SpringBootTest
-@ActiveProfiles("test")
 class AiQueryReviewAdapterTest {
 
-    @Autowired
-    private lateinit var aiQueryReviewAdapter: AiQueryReviewAdapter
+    private val attemptRepository = mockk<AiQueryReviewAttemptRepository>()
+    private val overrideRepository = mockk<AiQueryReviewOverrideRepository>()
+    private val executionRequestRepository = mockk<ExecutionRequestRepository>()
+    private val userRepository = mockk<UserRepository>()
 
-    @Autowired
-    private lateinit var executionRequestHelper: ExecutionRequestHelper
+    private lateinit var adapter: AiQueryReviewAdapter
 
-    @Autowired
-    private lateinit var connectionHelper: ConnectionHelper
+    private val attempts = mutableMapOf<String, AiQueryReviewAttemptEntity>()
+    private val overrides = mutableMapOf<String, AiQueryReviewOverrideEntity>()
+    private val idSequence = AtomicInteger()
 
-    @Autowired
-    private lateinit var userHelper: UserHelper
+    private val executionRequestId = ExecutionRequestId("req-1")
+    private val adminId = "user-admin"
+    private lateinit var executionRequest: ExecutionRequestEntity
+    private lateinit var admin: UserEntity
 
-    @AfterEach
-    fun cleanup() {
-        aiQueryReviewAdapter.deleteAll()
-        executionRequestHelper.deleteAll()
-        connectionHelper.deleteAll()
-        userHelper.deleteAll()
+    @BeforeEach
+    fun setUp() {
+        attempts.clear()
+        overrides.clear()
+        idSequence.set(0)
+
+        executionRequest = mockk {
+            every { id } returns executionRequestId.toString()
+        }
+        admin = mockk {
+            every { id } returns adminId
+        }
+
+        every { executionRequestRepository.findById(executionRequestId.toString()) } returns Optional.of(executionRequest)
+        every { userRepository.findById(adminId) } returns Optional.of(admin)
+
+        every { attemptRepository.save(any()) } answers {
+            val entity = firstArg<AiQueryReviewAttemptEntity>()
+            if (entity.id == null) {
+                entity.id = "attempt-${idSequence.incrementAndGet()}"
+            }
+            attempts[entity.id!!] = entity
+            entity
+        }
+        every { attemptRepository.findById(any()) } answers {
+            Optional.ofNullable(attempts[firstArg()])
+        }
+        every {
+            attemptRepository.findFirstByExecutionRequestIdAndRevisionFingerprintOrderByCreatedAtDesc(
+                any(),
+                any(),
+            )
+        } answers {
+            val requestId = firstArg<String>()
+            val fingerprint = secondArg<String>()
+            attempts.values
+                .filter { it.executionRequest.id == requestId && it.revisionFingerprint == fingerprint }
+                .maxByOrNull { it.createdAt }
+        }
+        every {
+            attemptRepository.existsByExecutionRequestIdAndRevisionFingerprintAndStatus(
+                any(),
+                any(),
+                any(),
+            )
+        } answers {
+            val requestId = firstArg<String>()
+            val fingerprint = secondArg<String>()
+            val status = thirdArg<AiReviewAttemptStatus>()
+            attempts.values.any {
+                it.executionRequest.id == requestId &&
+                    it.revisionFingerprint == fingerprint &&
+                    it.status == status
+            }
+        }
+
+        every { overrideRepository.save(any()) } answers {
+            val entity = firstArg<AiQueryReviewOverrideEntity>()
+            if (entity.id == null) {
+                entity.id = "override-${idSequence.incrementAndGet()}"
+            }
+            overrides[entity.id!!] = entity
+            entity
+        }
+        every {
+            overrideRepository.findFirstByExecutionRequestIdAndRevisionFingerprintOrderByCreatedAtDesc(
+                any(),
+                any(),
+            )
+        } answers {
+            val requestId = firstArg<String>()
+            val fingerprint = secondArg<String>()
+            overrides.values
+                .filter { it.executionRequest.id == requestId && it.revisionFingerprint == fingerprint }
+                .maxByOrNull { it.createdAt }
+        }
+
+        adapter = AiQueryReviewAdapter(
+            attemptRepository,
+            overrideRepository,
+            executionRequestRepository,
+            userRepository,
+        )
     }
 
     @Test
     fun `create pending, complete as approved, fetch latest, create override and fetch`() {
-        val author = userHelper.createUser()
-        val admin = userHelper.createUser()
-        val connection = connectionHelper.createDummyConnection()
-        val request = executionRequestHelper.createExecutionRequest(
-            author = author,
-            connection = connection,
-            statement = "SELECT * FROM users;",
-            description = "Review this query",
-        )
-        val executionRequestId = ExecutionRequestId(request.getId())
         val fingerprint = RevisionFingerprint.compute(
             engine = DatasourceType.POSTGRESQL,
             statement = "SELECT * FROM users;",
@@ -63,11 +138,11 @@ class AiQueryReviewAdapterTest {
             requestType = RequestType.SingleExecution,
         )
 
-        val pending = aiQueryReviewAdapter.createPending(executionRequestId, fingerprint)
+        val pending = adapter.createPending(executionRequestId, fingerprint)
         assertNotNull(pending.id)
         assertEquals(AiReviewAttemptStatus.PENDING, pending.status)
         assertNull(pending.completedAt)
-        assertTrue(aiQueryReviewAdapter.hasInFlightPending(executionRequestId, fingerprint))
+        assertTrue(adapter.hasInFlightPending(executionRequestId, fingerprint))
 
         val findings = listOf(
             AiFinding(
@@ -77,7 +152,7 @@ class AiQueryReviewAdapterTest {
                 fix = "List explicit columns",
             ),
         )
-        val completed = aiQueryReviewAdapter.complete(
+        val completed = adapter.complete(
             attemptId = pending.id!!,
             status = AiReviewAttemptStatus.APPROVED,
             summary = "Looks good",
@@ -92,24 +167,24 @@ class AiQueryReviewAdapterTest {
         assertEquals(findings, completed.findings)
         assertEquals("SELECT id FROM users;", completed.suggestedSql)
         assertNotNull(completed.completedAt)
-        assertFalse(aiQueryReviewAdapter.hasInFlightPending(executionRequestId, fingerprint))
+        assertFalse(adapter.hasInFlightPending(executionRequestId, fingerprint))
 
-        val latest = aiQueryReviewAdapter.findLatestForRevision(executionRequestId, fingerprint)
+        val latest = adapter.findLatestForRevision(executionRequestId, fingerprint)
         assertNotNull(latest)
         assertEquals(completed.id, latest!!.id)
         assertEquals(AiReviewAttemptStatus.APPROVED, latest.status)
 
-        val override = aiQueryReviewAdapter.createOverride(
+        val override = adapter.createOverride(
             executionRequestId = executionRequestId,
             fingerprint = fingerprint,
-            actorId = admin.getId()!!,
+            actorId = adminId,
             reason = "Emergency deploy",
         )
         assertNotNull(override.id)
         assertEquals("Emergency deploy", override.reason)
-        assertEquals(admin.getId(), override.actorId)
+        assertEquals(adminId, override.actorId)
 
-        val latestOverride = aiQueryReviewAdapter.findLatestOverride(executionRequestId, fingerprint)
+        val latestOverride = adapter.findLatestOverride(executionRequestId, fingerprint)
         assertNotNull(latestOverride)
         assertEquals(override.id, latestOverride!!.id)
     }
