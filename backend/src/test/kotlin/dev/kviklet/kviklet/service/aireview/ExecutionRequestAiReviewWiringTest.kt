@@ -39,7 +39,9 @@ import org.springframework.context.ApplicationEventPublisher
 
 /**
  * Focused unit coverage for Task 7 wiring without SpringBootTest / Docker.
- * Full MockWebServer integration is deferred when Testcontainers is unavailable.
+ * Full SpringBootTest + MockWebServer integration is deferred: local OrbStack
+ * rejects the Testcontainers docker-java API (client 1.32 vs min 1.40). CI relies
+ * on this suite plus other `*aireview*` unit tests (see Readme AI Query Review).
  */
 class ExecutionRequestAiReviewWiringTest {
 

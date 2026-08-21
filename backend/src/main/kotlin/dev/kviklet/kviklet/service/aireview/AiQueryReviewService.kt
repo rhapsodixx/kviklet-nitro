@@ -2,6 +2,7 @@ package dev.kviklet.kviklet.service.aireview
 
 import dev.kviklet.kviklet.db.AiQueryReviewAdapter
 import dev.kviklet.kviklet.db.ExecutionRequestAdapter
+import dev.kviklet.kviklet.security.NoPolicy
 import dev.kviklet.kviklet.service.dto.AiQueryReviewAttempt
 import dev.kviklet.kviklet.service.dto.AiQueryReviewOverride
 import dev.kviklet.kviklet.service.dto.DatasourceExecutionRequest
@@ -40,6 +41,8 @@ class AiQueryReviewService(
         private const val RETRY_COOLDOWN_MS = 3_000L
     }
 
+    /** Called from async / wiring paths; HTTP auth is enforced on ExecutionRequestService. */
+    @NoPolicy
     fun enqueueReview(details: ExecutionRequestDetails) {
         enqueueReview(details, resolveMode(details))
     }
@@ -50,6 +53,7 @@ class AiQueryReviewService(
         enqueueReview(details)
     }
 
+    @NoPolicy
     fun enqueueReview(details: ExecutionRequestDetails, mode: AiReviewMode) {
         if (mode == AiReviewMode.DISABLED) {
             return
@@ -62,11 +66,13 @@ class AiQueryReviewService(
         runReview(pending, context)
     }
 
+    @NoPolicy
     fun retry(id: ExecutionRequestId): AiQueryReviewAttempt {
         val details = executionRequestAdapter.getExecutionRequestDetails(id)
         return retry(id, resolveMode(details))
     }
 
+    @NoPolicy
     fun retry(id: ExecutionRequestId, mode: AiReviewMode): AiQueryReviewAttempt {
         if (mode == AiReviewMode.DISABLED) {
             throw IllegalArgumentException("AI review is disabled for this connection")
@@ -92,6 +98,7 @@ class AiQueryReviewService(
         return runReview(pending, context)
     }
 
+    @NoPolicy
     fun overrideFailed(id: ExecutionRequestId, actorId: String, reason: String): AiQueryReviewOverride {
         val trimmedReason = reason.trim()
         if (trimmedReason.isEmpty()) {
@@ -112,9 +119,11 @@ class AiQueryReviewService(
         )
     }
 
+    @NoPolicy
     fun currentSnapshot(details: ExecutionRequestDetails): AiReviewSnapshot =
         currentSnapshot(details, resolveMode(details))
 
+    @NoPolicy
     fun currentSnapshot(details: ExecutionRequestDetails, mode: AiReviewMode): AiReviewSnapshot {
         val context = reviewContextOrNull(details)
         if (context == null) {
