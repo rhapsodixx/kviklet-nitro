@@ -14,8 +14,8 @@ import org.springframework.stereotype.Service
 /**
  * Snapshot of AI review state for the current request revision.
  *
- * Note: [DatasourceConnection] does not yet expose [AiReviewMode] (Task 6). Callers pass
- * [mode] explicitly on [enqueueReview] / [currentSnapshot] / [retry] until then.
+ * Callers read [DatasourceConnection.aiReviewMode] and pass it to
+ * [AiQueryReviewService.enqueueReview] / [currentSnapshot] / [retry].
  */
 data class AiReviewSnapshot(
     val mode: AiReviewMode,

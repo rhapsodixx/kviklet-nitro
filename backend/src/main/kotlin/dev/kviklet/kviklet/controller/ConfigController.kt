@@ -6,6 +6,7 @@ import dev.kviklet.kviklet.security.ldap.LdapProperties
 import dev.kviklet.kviklet.security.saml.SamlProperties
 import dev.kviklet.kviklet.service.ConfigService
 import dev.kviklet.kviklet.service.LicenseService
+import dev.kviklet.kviklet.service.aireview.AiReviewProperties
 import dev.kviklet.kviklet.service.dto.Configuration
 import dev.kviklet.kviklet.service.dto.License
 import io.swagger.v3.oas.annotations.tags.Tag
@@ -34,6 +35,7 @@ open class PublicConfigResponse(
     open val version: String,
     open val buildDate: String,
     open val gitCommit: String,
+    open val aiReviewConfigured: Boolean,
 )
 
 data class ConfigRequest(val teamsUrl: String?, val slackUrl: String?)
@@ -49,6 +51,7 @@ data class ConfigResponse(
     override val version: String,
     override val buildDate: String,
     override val gitCommit: String,
+    override val aiReviewConfigured: Boolean,
     val teamsUrl: String?,
     val slackUrl: String?,
 ) : PublicConfigResponse(
@@ -62,6 +65,7 @@ data class ConfigResponse(
     version,
     buildDate,
     gitCommit,
+    aiReviewConfigured,
 ) {
     companion object {
         fun fromConfiguration(
@@ -73,6 +77,7 @@ data class ConfigResponse(
             version: String,
             buildDate: String,
             gitCommit: String,
+            aiReviewConfigured: Boolean,
         ): ConfigResponse {
             val licensesSorted = licenses.sortedByDescending { it.file.createdAt }
             return ConfigResponse(
@@ -86,6 +91,7 @@ data class ConfigResponse(
                 version = version,
                 buildDate = buildDate,
                 gitCommit = gitCommit,
+                aiReviewConfigured = aiReviewConfigured,
                 teamsUrl = configuration.teamsUrl,
                 slackUrl = configuration.slackUrl,
             )
@@ -107,12 +113,14 @@ class ConfigController(
     val configService: ConfigService,
     val licenseService: LicenseService,
     val applicationProperties: ApplicationProperties,
+    val aiReviewProperties: AiReviewProperties,
 ) {
 
     @GetMapping("/")
     fun getConfig(): PublicConfigResponse {
         val licenses = licenseService.getLicenses()
         val licensesSorted = licenses.sortedByDescending { it.file.createdAt }
+        val aiReviewConfigured = aiReviewProperties.isConfigured()
         try {
             val config = configService.getConfiguration()
             return ConfigResponse.fromConfiguration(
@@ -124,6 +132,7 @@ class ConfigController(
                 applicationProperties.version,
                 applicationProperties.buildDate,
                 applicationProperties.gitCommit,
+                aiReviewConfigured,
             )
         } catch (e: AccessDeniedException) {
             return PublicConfigResponse(
@@ -137,6 +146,7 @@ class ConfigController(
                 version = applicationProperties.version,
                 buildDate = applicationProperties.buildDate,
                 gitCommit = applicationProperties.gitCommit,
+                aiReviewConfigured = aiReviewConfigured,
             )
         }
     }
@@ -159,6 +169,7 @@ class ConfigController(
             applicationProperties.version,
             applicationProperties.buildDate,
             applicationProperties.gitCommit,
+            aiReviewProperties.isConfigured(),
         )
     }
 

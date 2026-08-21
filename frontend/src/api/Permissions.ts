@@ -13,6 +13,7 @@ const PERMISSIONS = [
   "execution_request:edit",
   "execution_request:review",
   "execution_request:execute",
+  "execution_request:override_ai_review",
   "role:get",
   "role:edit",
   "user:get",

@@ -20,6 +20,7 @@ const ConfigResponseSchema = z.object({
   version: z.string(),
   buildDate: z.string(),
   gitCommit: z.string(),
+  aiReviewConfigured: z.boolean(),
 });
 
 export const ConfigPayloadSchema = ConfigResponseSchema.omit({
@@ -33,6 +34,7 @@ export const ConfigPayloadSchema = ConfigResponseSchema.omit({
   version: true,
   buildDate: true,
   gitCommit: true,
+  aiReviewConfigured: true,
 });
 
 export type ConfigResponse = z.infer<typeof ConfigResponseSchema>;
