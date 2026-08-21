@@ -20,7 +20,7 @@ const ConfigResponseSchema = z.object({
   version: z.string(),
   buildDate: z.string(),
   gitCommit: z.string(),
-  aiReviewConfigured: z.boolean(),
+  aiReviewConfigured: z.boolean().default(false),
 });
 
 export const ConfigPayloadSchema = ConfigResponseSchema.omit({

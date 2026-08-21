@@ -14,6 +14,8 @@ function DatasourceRequestDisplay({
   dataLoading,
   executionError,
   proxyResponse,
+  editStatementRequested,
+  onEditStatementHandled,
 }: {
   request: DatasourceExecutionRequestResponseWithComments | undefined;
   updateRequest: (request: { statement?: string }) => Promise<void>;
@@ -21,12 +23,16 @@ function DatasourceRequestDisplay({
   dataLoading: boolean;
   executionError: string | undefined;
   proxyResponse: ProxyResponse | undefined;
+  editStatementRequested?: boolean;
+  onEditStatementHandled?: () => void;
 }) {
   return (
     <>
       <DatasourceRequestBox
         request={request}
         updateRequest={updateRequest}
+        editStatementRequested={editStatementRequested}
+        onEditStatementHandled={onEditStatementHandled}
       ></DatasourceRequestBox>
       <div className="mt-4 flex justify-center">
         {(dataLoading && <Spinner></Spinner>) ||

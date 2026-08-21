@@ -65,6 +65,18 @@ function DatasourceRequestActions({
   const getDisabledReason = () => {
     if (request?.reviewStatus !== "APPROVED") {
       return "Request needs to be approved before execution";
+    } else if (request?.aiReviewBlocksExecution) {
+      const aiStatus = request.aiReview?.status;
+      if (aiStatus === "PENDING") {
+        return "AI review is still in progress";
+      }
+      if (aiStatus === "REJECTED") {
+        return "AI review rejected this query; edit the statement to re-run review";
+      }
+      if (aiStatus === "FAILED") {
+        return "AI review failed; retry or override before execution";
+      }
+      return "Blocked by AI review";
     } else if (request?.executionStatus === "EXECUTED") {
       return "Request has already been executed";
     } else if (request?.type === "Dump" && !isAuthor) {
@@ -89,6 +101,7 @@ function DatasourceRequestActions({
     downloadPossible &&
     canExecute &&
     request?.reviewStatus === "APPROVED" &&
+    !request?.aiReviewBlocksExecution &&
     request?.executionStatus !== "EXECUTED";
   const handleDownloadResults = async () => {
     if (!request) {
@@ -179,11 +192,16 @@ function DatasourceRequestActions({
               void startServer();
             },
             enabled:
-              isAuthor && canExecute && request?.reviewStatus === "APPROVED",
+              isAuthor &&
+              canExecute &&
+              request?.reviewStatus === "APPROVED" &&
+              !request?.aiReviewBlocksExecution,
             tooltip: !isAuthor
               ? "Proxy access is granted only to the requester"
               : request?.reviewStatus !== "APPROVED"
               ? "Request needs to be approved before starting the proxy"
+              : request?.aiReviewBlocksExecution
+              ? getDisabledReason()
               : !canExecute
               ? NO_EXECUTE_PERMISSION_MESSAGE
               : undefined,
@@ -294,6 +312,7 @@ function DatasourceRequestActions({
             variant="primary"
             disabled={
               request?.reviewStatus !== "APPROVED" ||
+              !!request?.aiReviewBlocksExecution ||
               request?.executionStatus === "EXECUTED" ||
               (request?.type === "Dump" && !isAuthor) ||
               (executesDirectly && !canExecute)
@@ -317,6 +336,7 @@ function DatasourceRequestActions({
             id="runQuery"
             variant={
               (request?.reviewStatus == "APPROVED" &&
+                !request?.aiReviewBlocksExecution &&
                 request?.executionStatus !== "EXECUTED" &&
                 !(executesDirectly && !canExecute) &&
                 "primary") ||

@@ -73,7 +73,9 @@ const databaseConnectionResponseSchema = withType(
     explainEnabled: z.boolean(),
     dryRunEnabled: z.boolean(),
     dryRunRequiresApproval: z.boolean(),
-    aiReviewMode: z.nativeEnum(AiReviewMode),
+    aiReviewMode: z
+      .nativeEnum(AiReviewMode)
+      .default(AiReviewMode.DISABLED),
     roleArn: z.string().nullable(),
     maxTemporaryAccessDuration: z.number().nullable().optional(),
     storeResults: z.boolean(),

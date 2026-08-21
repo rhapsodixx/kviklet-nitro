@@ -9,6 +9,7 @@ import Button from "../../components/Button";
 import InitialBubble from "../../components/InitialBubble";
 import ConnectionLink from "./components/ConnectionLink";
 import ApprovalProgress from "./ApprovalProgress";
+import AiReviewBadge from "./AiReviewBadge";
 
 const requestTypeLabel = (
   request: ExecutionRequestResponseWithComments,
@@ -107,6 +108,14 @@ function RequestSidebar({
       >
         {mapStatus(request.reviewStatus, request.executionStatus)}
       </div>
+      {request.aiReviewMode &&
+        request.aiReviewMode !== "DISABLED" &&
+        request.aiReview && (
+          <AiReviewBadge
+            status={request.aiReview.status}
+            overridden={!!request.aiReviewOverride}
+          />
+        )}
       {children}
       <SidebarDivider />
       <div className="grid grid-cols-2 gap-4 md:flex md:flex-col">
