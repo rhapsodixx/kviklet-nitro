@@ -231,10 +231,4 @@ class AiQueryReviewAdapter(
             fingerprint,
         )
         ?.toDto()
-
-    @Transactional
-    fun deleteAll() {
-        attemptRepository.deleteAll()
-        overrideRepository.deleteAll()
-    }
 }
