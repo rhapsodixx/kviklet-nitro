@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo
 import dev.kviklet.kviklet.security.toPermissionStrings
 import dev.kviklet.kviklet.service.ConnectionService
 import dev.kviklet.kviklet.service.TestConnectionResult
+import dev.kviklet.kviklet.service.aireview.AiReviewMode
 import dev.kviklet.kviklet.service.dto.AuthenticationDetails
 import dev.kviklet.kviklet.service.dto.AuthenticationType
 import dev.kviklet.kviklet.service.dto.Connection
@@ -112,6 +113,7 @@ data class CreateDatasourceConnectionRequest(
     val category: String? = null,
     val dryRunEnabled: Boolean = false,
     val dryRunRequiresApproval: Boolean = true,
+    val aiReviewMode: AiReviewMode = AiReviewMode.DISABLED,
 ) : ConnectionRequest()
 
 @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "connectionType")
@@ -181,6 +183,8 @@ data class UpdateDatasourceConnectionRequest(
     val dryRunEnabled: Boolean? = null,
 
     val dryRunRequiresApproval: Boolean? = null,
+
+    val aiReviewMode: AiReviewMode? = null,
 ) : UpdateConnectionRequest()
 
 data class UpdateKubernetesConnectionRequest(
@@ -278,6 +282,7 @@ data class DatasourceConnectionResponse(
     val category: String?,
     val dryRunEnabled: Boolean,
     val dryRunRequiresApproval: Boolean,
+    val aiReviewMode: AiReviewMode,
     /** See [ConnectionResponse.fromDto]: null means the permissions were not resolved here. */
     val permissions: List<String>?,
 ) : ConnectionResponse(ConnectionType.DATASOURCE) {
@@ -315,6 +320,7 @@ data class DatasourceConnectionResponse(
                 category = datasourceConnection.category,
                 dryRunEnabled = datasourceConnection.dryRunEnabled,
                 dryRunRequiresApproval = datasourceConnection.dryRunRequiresApproval,
+                aiReviewMode = datasourceConnection.aiReviewMode,
             )
     }
 }
@@ -408,6 +414,7 @@ class ConnectionController(val connectionService: ConnectionService) {
             category = request.category,
             dryRunEnabled = request.dryRunEnabled,
             dryRunRequiresApproval = request.dryRunRequiresApproval,
+            aiReviewMode = request.aiReviewMode,
         )
 
     private fun testDatabaseConnection(request: CreateDatasourceConnectionRequest): TestConnectionResult =

@@ -28,6 +28,12 @@ enum DatabaseProtocol {
   MARIADB = "MARIADB",
 }
 
+enum AiReviewMode {
+  DISABLED = "DISABLED",
+  OPTIONAL = "OPTIONAL",
+  MANDATORY = "MANDATORY",
+}
+
 const roleRequirementSchema = z.object({
   roleId: z.string(),
   numRequired: z.number(),
@@ -67,6 +73,9 @@ const databaseConnectionResponseSchema = withType(
     explainEnabled: z.boolean(),
     dryRunEnabled: z.boolean(),
     dryRunRequiresApproval: z.boolean(),
+    aiReviewMode: z
+      .nativeEnum(AiReviewMode)
+      .default(AiReviewMode.DISABLED),
     roleArn: z.string().nullable(),
     maxTemporaryAccessDuration: z.number().nullable().optional(),
     storeResults: z.boolean(),
@@ -132,6 +141,7 @@ interface DatabaseConnectionBase extends ConnectionBase {
   explainEnabled: boolean;
   dryRunEnabled: boolean;
   dryRunRequiresApproval: boolean;
+  aiReviewMode?: AiReviewMode;
   maxTemporaryAccessDuration?: number | null;
   storeResults: boolean;
 }
@@ -314,6 +324,7 @@ export {
   getCategories,
   DatabaseType,
   DatabaseProtocol,
+  AiReviewMode,
   deleteConnection,
   roleRequirementSchema,
   reviewConfigSchema,

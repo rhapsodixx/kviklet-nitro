@@ -6,6 +6,7 @@ import dev.kviklet.kviklet.security.Permission
 import dev.kviklet.kviklet.security.Resource
 import dev.kviklet.kviklet.security.SecuredDomainId
 import dev.kviklet.kviklet.security.SecuredDomainObject
+import dev.kviklet.kviklet.service.aireview.AiReviewMode
 import java.io.Serializable
 
 enum class DatasourceType(val schema: String) {
@@ -109,6 +110,7 @@ data class DatasourceConnection(
     val maxTemporaryAccessDuration: Long? = null,
     val dryRunEnabled: Boolean,
     val dryRunRequiresApproval: Boolean,
+    val aiReviewMode: AiReviewMode = AiReviewMode.DISABLED,
 ) : Connection(id, displayName, description, reviewConfig, maxExecutions, category) {
     fun getConnectionString(): String = when (auth) {
         is AuthenticationDetails.UserPassword -> when (type) {

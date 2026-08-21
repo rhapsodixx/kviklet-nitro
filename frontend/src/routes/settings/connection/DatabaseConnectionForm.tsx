@@ -5,6 +5,7 @@ import {
   DatabaseType,
   TestConnectionResponse,
   roleRequirementSchema,
+  AiReviewMode,
 } from "../../../api/DatasourceApi";
 import { ApiResponse } from "../../../api/Errors";
 import {
@@ -36,6 +37,7 @@ import useNotification from "../../../hooks/useNotification";
 import Spinner from "../../../components/Spinner";
 import { supportsIamAuth, useCategories } from "../../../hooks/connections";
 import CategoryAutocomplete from "../../../components/CategoryAutocomplete";
+import useConfig from "../../../components/ConfigProvider";
 
 const baseConnectionSchema = z.object({
   displayName: z.string().min(3),
@@ -57,6 +59,7 @@ const baseConnectionSchema = z.object({
   explainEnabled: z.boolean().default(false),
   dryRunEnabled: z.boolean().default(false),
   dryRunRequiresApproval: z.boolean().default(false),
+  aiReviewMode: z.nativeEnum(AiReviewMode).default(AiReviewMode.DISABLED),
   maxTemporaryAccessDuration: z.coerce.number().nullable().optional(),
   storeResults: z.boolean().default(false),
   connectionType: z.literal("DATASOURCE").default("DATASOURCE"),
@@ -158,6 +161,8 @@ export default function DatabaseConnectionForm(props: {
   ]);
   const [dumpsEnabledVisible, setDumpsEnabledVisible] = useState(false);
   const { categories } = useCategories();
+  const { config } = useConfig();
+  const aiReviewConfigured = config?.aiReviewConfigured === true;
 
   const {
     roleRequirements,
@@ -195,6 +200,9 @@ export default function DatabaseConnectionForm(props: {
     setValue("dumpsEnabled", false);
     setValue("temporaryAccessEnabled", true);
     setValue("explainEnabled", false);
+    setValue("dryRunEnabled", false);
+    setValue("dryRunRequiresApproval", false);
+    setValue("aiReviewMode", AiReviewMode.DISABLED);
     setValue("storeResults", false);
     if (props.initialCategory) {
       setValue("category", props.initialCategory);
@@ -537,6 +545,46 @@ export default function DatabaseConnectionForm(props: {
                           className="my-auto h-4 w-4"
                           {...register("storeResults")}
                         />
+                      </div>
+                      <div className="flex w-full flex-col gap-1">
+                        <div className="flex w-full justify-between">
+                          <label
+                            htmlFor="aiReviewMode"
+                            className="my-auto mr-auto text-sm font-medium text-slate-700 dark:text-slate-200"
+                          >
+                            AI Query Review
+                          </label>
+                          <select
+                            id="aiReviewMode"
+                            data-testid="ai-review-mode"
+                            className="block basis-3/5 appearance-none rounded-md border border-slate-300 px-3 py-2 text-sm transition-colors focus:border-indigo-600 focus:outline-none hover:border-slate-400 focus:hover:border-indigo-600 dark:border-slate-700 dark:bg-slate-900 dark:focus:border-gray-500 dark:hover:border-slate-600 dark:hover:focus:border-gray-500"
+                            {...register("aiReviewMode")}
+                          >
+                            <option value={AiReviewMode.DISABLED}>Off</option>
+                            <option
+                              value={AiReviewMode.OPTIONAL}
+                              disabled={!aiReviewConfigured}
+                            >
+                              Optional
+                            </option>
+                            <option
+                              value={AiReviewMode.MANDATORY}
+                              disabled={!aiReviewConfigured}
+                            >
+                              Mandatory
+                            </option>
+                          </select>
+                        </div>
+                        {!aiReviewConfigured && (
+                          <p
+                            className="text-xs text-slate-500 dark:text-slate-400"
+                            data-testid="ai-review-mode-helper"
+                          >
+                            {
+                              "Set KVIKLET_AI_REVIEW_OPENROUTER_API_KEY (or kviklet.ai-review.openrouter.api-key) to enable"
+                            }
+                          </p>
+                        )}
                       </div>
                       <TestingConnectionFragment
                         handleSubmit={handleSubmit}

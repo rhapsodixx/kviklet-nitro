@@ -9,6 +9,9 @@ import KubernetesRequestActions from "./KubernetesRequestActions";
 import RequestSidebar from "./RequestSidebar";
 import ActivityTimeline from "./ActivityTimeline";
 import NotAuthorized from "../../components/NotAuthorized";
+import AiQueryReviewPanel from "./AiQueryReviewPanel";
+import { hasPermission } from "../../api/Permissions";
+import { useState } from "react";
 
 interface RequestReviewParams {
   requestId: string;
@@ -24,6 +27,8 @@ function RequestReview() {
     closeRequest,
     start,
     updateRequest,
+    retryAiReview,
+    overrideAiReview,
     results,
     kubernetesResults,
     dataLoading,
@@ -33,6 +38,7 @@ function RequestReview() {
   } = useRequest(params.requestId);
 
   const navigate = useNavigate();
+  const [editStatementRequested, setEditStatementRequested] = useState(false);
 
   const run = async (explain?: boolean, dryRun?: boolean) => {
     if (request?.type === "SingleExecution") {
@@ -41,6 +47,12 @@ function RequestReview() {
       void navigate(`/requests/${request?.id}/session`);
     }
   };
+
+  const showAiReview =
+    request?._type === "DATASOURCE" &&
+    !!request.aiReviewMode &&
+    request.aiReviewMode !== "DISABLED";
+  const aiReviewStarting = showAiReview && request.aiReview == null;
 
   return (
     <div>
@@ -76,6 +88,10 @@ function RequestReview() {
                     dataLoading={dataLoading}
                     executionError={executionError}
                     proxyResponse={proxyResponse}
+                    editStatementRequested={editStatementRequested}
+                    onEditStatementHandled={() =>
+                      setEditStatementRequested(false)
+                    }
                   ></DatasourceRequestDisplay>
                 ) : (
                   <KubernetesRequestDisplay
@@ -86,6 +102,26 @@ function RequestReview() {
                     executionError={executionError}
                     proxyResponse={proxyResponse}
                   ></KubernetesRequestDisplay>
+                )}
+                {showAiReview && (
+                  <div className="mt-4">
+                    <AiQueryReviewPanel
+                      review={request.aiReview}
+                      override={request.aiReviewOverride}
+                      starting={aiReviewStarting}
+                      canOverride={hasPermission(
+                        request.permissions,
+                        "execution_request:override_ai_review",
+                      )}
+                      onRetry={async () => {
+                        await retryAiReview();
+                      }}
+                      onOverride={async (reason) => {
+                        await overrideAiReview(reason);
+                      }}
+                      onEditStatement={() => setEditStatementRequested(true)}
+                    />
+                  </div>
                 )}
                 <div className="mt-3 w-full border-b border-slate-300 dark:border-slate-700"></div>
                 <ActivityTimeline

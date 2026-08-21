@@ -3,11 +3,18 @@ package dev.kviklet.kviklet.controller
 import com.fasterxml.jackson.annotation.JsonSubTypes
 import com.fasterxml.jackson.annotation.JsonTypeInfo
 import com.fasterxml.jackson.annotation.JsonTypeName
+import dev.kviklet.kviklet.db.UserAdapter
 import dev.kviklet.kviklet.security.CurrentUser
 import dev.kviklet.kviklet.security.UserDetailsWithId
 import dev.kviklet.kviklet.security.toPermissionStrings
 import dev.kviklet.kviklet.service.ColumnInfo
 import dev.kviklet.kviklet.service.ExecutionRequestService
+import dev.kviklet.kviklet.service.aireview.AiQueryReviewService
+import dev.kviklet.kviklet.service.aireview.AiReviewMode
+import dev.kviklet.kviklet.service.aireview.AiReviewSnapshot
+import dev.kviklet.kviklet.service.dto.AiFinding
+import dev.kviklet.kviklet.service.dto.AiQueryReviewAttempt
+import dev.kviklet.kviklet.service.dto.AiQueryReviewOverride
 import dev.kviklet.kviklet.service.dto.ApprovalProgress
 import dev.kviklet.kviklet.service.dto.CommentEvent
 import dev.kviklet.kviklet.service.dto.ConnectionId
@@ -208,7 +215,11 @@ sealed class ExecutionRequestResponse(open val id: ExecutionRequestId) {
 sealed class ExecutionRequestDetailResponse(open val id: ExecutionRequestId, open val events: List<EventResponse>) {
 
     companion object {
-        fun fromDto(dto: ExecutionRequestDetailsWithRoles): ExecutionRequestDetailResponse {
+        fun fromDto(
+            dto: ExecutionRequestDetailsWithRoles,
+            aiReviewSnapshot: AiReviewSnapshot? = null,
+            overrideActorName: String? = null,
+        ): ExecutionRequestDetailResponse {
             val request = dto.request
             return when (request) {
                 is DatasourceExecutionRequest -> DatasourceExecutionRequestDetailResponse(
@@ -229,6 +240,12 @@ sealed class ExecutionRequestDetailResponse(open val id: ExecutionRequestId, ope
                         dto.resolvedRoles,
                     ),
                     permissions = dto.permissions.toPermissionStrings(),
+                    aiReviewMode = aiReviewSnapshot?.mode ?: request.connection.aiReviewMode,
+                    aiReview = aiReviewSnapshot?.latestAttempt?.let { AiReviewAttemptResponse.fromDto(it) },
+                    aiReviewOverride = aiReviewSnapshot?.override?.let {
+                        AiReviewOverrideResponse.fromDto(it, overrideActorName)
+                    },
+                    aiReviewBlocksExecution = aiReviewSnapshot?.blocksExecution ?: false,
                 )
 
                 is KubernetesExecutionRequest -> KubernetesExecutionRequestDetailResponse(
@@ -252,6 +269,10 @@ sealed class ExecutionRequestDetailResponse(open val id: ExecutionRequestId, ope
                         dto.resolvedRoles,
                     ),
                     permissions = dto.permissions.toPermissionStrings(),
+                    aiReviewMode = null,
+                    aiReview = null,
+                    aiReviewOverride = null,
+                    aiReviewBlocksExecution = false,
                 )
             }
         }
@@ -278,6 +299,10 @@ data class DatasourceExecutionRequestDetailResponse(
      * request" are not included; the frontend has `author` and `reviewStatus` for those.
      */
     val permissions: List<String>,
+    val aiReviewMode: AiReviewMode? = null,
+    val aiReview: AiReviewAttemptResponse? = null,
+    val aiReviewOverride: AiReviewOverrideResponse? = null,
+    val aiReviewBlocksExecution: Boolean = false,
 ) : ExecutionRequestDetailResponse(
     id = id,
     events = events,
@@ -288,6 +313,66 @@ data class RoleApprovalProgressResponse(
     val numRequired: Int,
     val numCurrent: Int,
     val approverNames: List<String>,
+)
+
+data class AiReviewFindingResponse(
+    val severity: String,
+    val category: String,
+    val explanation: String,
+    val fix: String,
+) {
+    companion object {
+        fun fromDto(dto: AiFinding) = AiReviewFindingResponse(
+            severity = dto.severity.name,
+            category = dto.category,
+            explanation = dto.explanation,
+            fix = dto.fix,
+        )
+    }
+}
+
+data class AiReviewAttemptResponse(
+    val status: String,
+    val summary: String?,
+    val findings: List<AiReviewFindingResponse>,
+    val suggestedSql: String?,
+    val model: String?,
+    val promptPolicyVersion: String?,
+    val errorCategory: String?,
+    val createdAt: LocalDateTime,
+    val completedAt: LocalDateTime?,
+) {
+    companion object {
+        fun fromDto(dto: AiQueryReviewAttempt) = AiReviewAttemptResponse(
+            status = dto.status.name,
+            summary = dto.summary,
+            findings = dto.findings?.map { AiReviewFindingResponse.fromDto(it) } ?: emptyList(),
+            suggestedSql = dto.suggestedSql,
+            model = dto.model,
+            promptPolicyVersion = dto.promptPolicyVersion,
+            errorCategory = dto.errorCategory,
+            createdAt = dto.createdAt,
+            completedAt = dto.completedAt,
+        )
+    }
+}
+
+data class AiReviewOverrideResponse(
+    val reason: String,
+    val createdAt: LocalDateTime,
+    val actorName: String?,
+) {
+    companion object {
+        fun fromDto(dto: AiQueryReviewOverride, actorName: String?) = AiReviewOverrideResponse(
+            reason = dto.reason,
+            createdAt = dto.createdAt,
+            actorName = actorName,
+        )
+    }
+}
+
+data class AiReviewOverrideRequest(
+    val reason: String,
 )
 
 data class ApprovalProgressResponse(
@@ -341,6 +426,10 @@ data class KubernetesExecutionRequestDetailResponse(
     val approvalProgress: ApprovalProgressResponse,
     /** See [DatasourceExecutionRequestDetailResponse.permissions]. */
     val permissions: List<String>,
+    val aiReviewMode: AiReviewMode? = null,
+    val aiReview: AiReviewAttemptResponse? = null,
+    val aiReviewOverride: AiReviewOverrideResponse? = null,
+    val aiReviewBlocksExecution: Boolean = false,
 ) : ExecutionRequestDetailResponse(
     id = id,
     events = events,
@@ -644,7 +733,21 @@ data class ExecutionRequestListResponse(
     name = "Execution Requests",
     description = "Run queries against a datasource by interacting with Execution Requests",
 )
-class ExecutionRequestController(val executionRequestService: ExecutionRequestService) {
+class ExecutionRequestController(
+    val executionRequestService: ExecutionRequestService,
+    private val aiQueryReviewService: AiQueryReviewService,
+    private val userAdapter: UserAdapter,
+) {
+    private fun toDetailResponse(dto: ExecutionRequestDetailsWithRoles): ExecutionRequestDetailResponse {
+        val snapshot = aiQueryReviewService.currentSnapshot(dto.details)
+        val actorName = snapshot.override?.let { override ->
+            runCatching { userAdapter.findById(override.actorId) }
+                .getOrNull()
+                ?.let { it.fullName ?: it.email }
+        }
+        return ExecutionRequestDetailResponse.fromDto(dto, snapshot, actorName)
+    }
+
     @Operation(
         summary = "Export Databse Request Streamed",
         description = """
@@ -681,9 +784,7 @@ class ExecutionRequestController(val executionRequestService: ExecutionRequestSe
     @Operation(summary = "Get Execution Request")
     @GetMapping("/{executionRequestId}")
     fun get(@PathVariable executionRequestId: ExecutionRequestId): ExecutionRequestDetailResponse =
-        ExecutionRequestDetailResponse.fromDto(
-            executionRequestService.get(executionRequestId),
-        )
+        toDetailResponse(executionRequestService.get(executionRequestId))
 
     @Operation(summary = "List Execution Requests")
     @GetMapping("/")
@@ -742,7 +843,7 @@ class ExecutionRequestController(val executionRequestService: ExecutionRequestSe
         @CurrentUser userDetails: UserDetailsWithId,
     ): ExecutionRequestDetailResponse {
         val newRequest = executionRequestService.update(id, request, userDetails.id)
-        return ExecutionRequestDetailResponse.fromDto(newRequest)
+        return toDetailResponse(newRequest)
     }
 
     @Operation(summary = "Comment", description = "Leave a comment on an execution request.")
@@ -754,6 +855,40 @@ class ExecutionRequestController(val executionRequestService: ExecutionRequestSe
         @CurrentUser userDetails: UserDetailsWithId,
     ): EventResponse = EventResponse
         .fromEvent(executionRequestService.createComment(executionRequestId, request, userDetails.id))
+
+    @Operation(summary = "Retry AI query review for the current revision")
+    @PostMapping("/{executionRequestId}/ai-review/retry")
+    fun retryAiReview(
+        @PathVariable executionRequestId: ExecutionRequestId,
+    ): AiReviewAttemptResponse {
+        val details = executionRequestService.retryAiReview(executionRequestId)
+        val snapshot = aiQueryReviewService.currentSnapshot(details)
+        val attempt = snapshot.latestAttempt
+            ?: throw IllegalStateException("AI review retry completed but no attempt found")
+        return AiReviewAttemptResponse.fromDto(attempt)
+    }
+
+    @Operation(summary = "Override a failed AI query review for the current revision")
+    @PostMapping("/{executionRequestId}/ai-review/override")
+    fun overrideAiReview(
+        @PathVariable executionRequestId: ExecutionRequestId,
+        @Valid @RequestBody
+        request: AiReviewOverrideRequest,
+        @CurrentUser userDetails: UserDetailsWithId,
+    ): AiReviewOverrideResponse {
+        val details = executionRequestService.overrideAiReview(
+            executionRequestId,
+            userDetails.id,
+            request.reason,
+        )
+        val snapshot = aiQueryReviewService.currentSnapshot(details)
+        val override = snapshot.override
+            ?: throw IllegalStateException("AI review override recorded but not found")
+        val actorName = runCatching { userAdapter.findById(override.actorId) }
+            .getOrNull()
+            ?.let { it.fullName ?: it.email }
+        return AiReviewOverrideResponse.fromDto(override, actorName)
+    }
 
     @Operation(
         summary = "Execute Execution Request",

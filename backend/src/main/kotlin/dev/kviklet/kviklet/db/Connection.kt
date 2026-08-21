@@ -11,6 +11,7 @@ import dev.kviklet.kviklet.service.dto.DatabaseProtocol
 import dev.kviklet.kviklet.service.dto.DatasourceConnection
 import dev.kviklet.kviklet.service.dto.DatasourceType
 import dev.kviklet.kviklet.service.dto.KubernetesConnection
+import dev.kviklet.kviklet.service.aireview.AiReviewMode
 import dev.kviklet.kviklet.service.dto.ReviewConfig
 import jakarta.persistence.CascadeType
 import jakarta.persistence.Column
@@ -78,6 +79,9 @@ class ConnectionEntity(
     var category: String? = null,
     var dryRunEnabled: Boolean = false,
     var dryRunRequiresApproval: Boolean = true,
+    @Enumerated(EnumType.STRING)
+    @Column(name = "ai_review_mode")
+    var aiReviewMode: AiReviewMode = AiReviewMode.DISABLED,
 
     // Kubernetes connection fields
     @Column(name = "kubernetes_exec_initial_wait_timeout_seconds")
@@ -203,6 +207,7 @@ class ConnectionAdapter(
         category: String? = null,
         dryRunEnabled: Boolean = false,
         dryRunRequiresApproval: Boolean = true,
+        aiReviewMode: AiReviewMode = AiReviewMode.DISABLED,
     ): Connection = decryptCredentialsIfNeeded(
         save(
             ConnectionEntity(
@@ -231,6 +236,7 @@ class ConnectionAdapter(
                 category = category,
                 dryRunEnabled = dryRunEnabled,
                 dryRunRequiresApproval = dryRunRequiresApproval,
+                aiReviewMode = aiReviewMode,
             ),
         ),
     )
@@ -258,6 +264,7 @@ class ConnectionAdapter(
         category: String? = null,
         dryRunEnabled: Boolean = false,
         dryRunRequiresApproval: Boolean = true,
+        aiReviewMode: AiReviewMode = AiReviewMode.DISABLED,
     ): Connection {
         val datasourceConnection = connectionRepository.findByIdOrNull(id.toString())
             ?: throw EntityNotFound(
@@ -294,6 +301,7 @@ class ConnectionAdapter(
         datasourceConnection.category = category
         datasourceConnection.dryRunEnabled = dryRunEnabled
         datasourceConnection.dryRunRequiresApproval = dryRunRequiresApproval
+        datasourceConnection.aiReviewMode = aiReviewMode
 
         return decryptCredentialsIfNeeded(save(datasourceConnection))
     }
@@ -407,6 +415,7 @@ class ConnectionAdapter(
                 category = connection.category,
                 dryRunEnabled = connection.dryRunEnabled,
                 dryRunRequiresApproval = connection.dryRunRequiresApproval,
+                aiReviewMode = connection.aiReviewMode,
             )
 
         ConnectionType.KUBERNETES ->

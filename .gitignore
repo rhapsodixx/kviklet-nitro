@@ -10,3 +10,4 @@ lib
 *.tgz
 .idea
 .aider*
+.worktrees

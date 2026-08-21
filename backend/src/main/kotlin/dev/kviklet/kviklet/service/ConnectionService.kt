@@ -8,6 +8,8 @@ import dev.kviklet.kviklet.db.RoleAdapter
 import dev.kviklet.kviklet.security.Permission
 import dev.kviklet.kviklet.security.PermissionResolver
 import dev.kviklet.kviklet.security.Policy
+import dev.kviklet.kviklet.service.aireview.AiReviewMode
+import dev.kviklet.kviklet.service.aireview.AiReviewProperties
 import dev.kviklet.kviklet.service.dto.AuthenticationDetails
 import dev.kviklet.kviklet.service.dto.AuthenticationType
 import dev.kviklet.kviklet.service.dto.Connection
@@ -40,6 +42,7 @@ class ConnectionService(
     private val licenseService: LicenseService,
     private val roleAdapter: RoleAdapter,
     private val permissionResolver: PermissionResolver,
+    private val aiReviewProperties: AiReviewProperties,
 ) {
 
     @Transactional
@@ -75,6 +78,9 @@ class ConnectionService(
         val newReviewConfig = request.reviewConfig?.toReviewConfig() ?: connection.reviewConfig
         validateReviewConfig(newReviewConfig, existingReviewConfig = connection.reviewConfig)
 
+        val newAiReviewMode = request.aiReviewMode ?: connection.aiReviewMode
+        validateAiReviewMode(newAiReviewMode)
+
         val newMaxExecutions = request.maxExecutions ?: connection.maxExecutions
 
         // Detect if fields that affect status calculation have changed
@@ -108,6 +114,7 @@ class ConnectionService(
             category = if (request.clearCategory) null else (request.category ?: connection.category),
             dryRunEnabled = request.dryRunEnabled ?: connection.dryRunEnabled,
             dryRunRequiresApproval = request.dryRunRequiresApproval ?: connection.dryRunRequiresApproval,
+            aiReviewMode = newAiReviewMode,
         )
 
         // Recalculate statuses if reviewConfig or maxExecutions changed
@@ -235,6 +242,7 @@ class ConnectionService(
         category: String?,
         dryRunEnabled: Boolean,
         dryRunRequiresApproval: Boolean,
+        aiReviewMode: AiReviewMode = AiReviewMode.DISABLED,
     ): ConnectionWithPermissions {
         if (authenticationType == AuthenticationType.USER_PASSWORD && password == null) {
             throw IllegalArgumentException("Password is required for USER_PASSWORD authentication")
@@ -245,6 +253,7 @@ class ConnectionService(
             throw IllegalArgumentException("Dry run is not supported for MongoDB connections")
         }
         validateReviewConfig(reviewConfig, existingReviewConfig = null)
+        validateAiReviewMode(aiReviewMode)
         return connectionAdapter.createDatasourceConnection(
             connectionId,
             displayName,
@@ -269,6 +278,7 @@ class ConnectionService(
             category,
             dryRunEnabled,
             dryRunRequiresApproval,
+            aiReviewMode,
         ).withPermissions()
     }
 
@@ -400,6 +410,12 @@ class ConnectionService(
                 "Connection already exists",
                 "A connection with id $connectionId already exists.",
             )
+        }
+    }
+
+    private fun validateAiReviewMode(mode: AiReviewMode) {
+        if (mode != AiReviewMode.DISABLED && !aiReviewProperties.isConfigured()) {
+            throw IllegalArgumentException("OpenRouter API key is not configured")
         }
     }
 

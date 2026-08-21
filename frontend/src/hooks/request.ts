@@ -12,8 +12,10 @@ import {
   closeRequest as closeRequestApi,
   executeCommand,
   getSingleRequest,
+  overrideAiReview as overrideAiReviewApi,
   patchRequest,
   postStartServer,
+  retryAiReview as retryAiReviewApi,
   runQuery,
 } from "../api/ExecutionRequestApi";
 import useNotification from "./useNotification";
@@ -122,6 +124,22 @@ const useRequest = (id: string) => {
       setLoading(false);
     })();
   }, []);
+
+  // Poll while AI review is PENDING, or while enabled mode has no attempt yet (starting).
+  useEffect(() => {
+    const mode = request?._type === "DATASOURCE" ? request.aiReviewMode : undefined;
+    const aiReviewStarting =
+      !!mode && mode !== "DISABLED" && request?.aiReview == null;
+    const shouldPoll =
+      request?.aiReview?.status === "PENDING" || aiReviewStarting;
+    if (!shouldPoll) {
+      return;
+    }
+    const intervalId = window.setInterval(() => {
+      void refreshRequest();
+    }, 2000);
+    return () => window.clearInterval(intervalId);
+  }, [request?.aiReview?.status, request?.aiReview, request?.aiReviewMode, request?._type]);
 
   const [results, setResults] = useState<ExecuteResponseResult[] | undefined>();
   const [dataLoading, setDataLoading] = useState<boolean>(false);
@@ -248,6 +266,34 @@ const useRequest = (id: string) => {
     return true;
   };
 
+  const retryAiReview = async (): Promise<boolean> => {
+    const response = await retryAiReviewApi(id);
+    if (isApiErrorResponse(response)) {
+      addNotification({
+        title: "Failed to retry AI review",
+        text: response.message,
+        type: "error",
+      });
+      return false;
+    }
+    await refreshRequest();
+    return true;
+  };
+
+  const overrideAiReview = async (reason: string): Promise<boolean> => {
+    const response = await overrideAiReviewApi(id, reason);
+    if (isApiErrorResponse(response)) {
+      addNotification({
+        title: "Failed to override AI review",
+        text: response.message,
+        type: "error",
+      });
+      return false;
+    }
+    await refreshRequest();
+    return true;
+  };
+
   return {
     request,
     sendReview,
@@ -256,6 +302,8 @@ const useRequest = (id: string) => {
     closeRequest,
     start,
     updateRequest,
+    retryAiReview,
+    overrideAiReview,
     results,
     kubernetesResults,
     dataLoading,

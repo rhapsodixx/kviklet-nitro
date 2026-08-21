@@ -9,9 +9,13 @@ import { UserStatusContext } from "../../components/UserStatusProvider";
 function DatasourceRequestBox({
   request,
   updateRequest,
+  editStatementRequested,
+  onEditStatementHandled,
 }: {
   request: DatasourceExecutionRequestResponseWithComments | undefined;
   updateRequest: (request: { statement?: string }) => Promise<void>;
+  editStatementRequested?: boolean;
+  onEditStatementHandled?: () => void;
 }) {
   const [editMode, setEditMode] = useState(false);
   const userContext = useContext(UserStatusContext);
@@ -28,8 +32,23 @@ function DatasourceRequestBox({
     setStatement(request?.statement || "");
   }, [request?.statement]);
 
+  useEffect(() => {
+    if (editStatementRequested && isAuthor && request?.type === "SingleExecution") {
+      setEditMode(true);
+      document
+        .getElementById("request-statement")
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      onEditStatementHandled?.();
+    } else if (editStatementRequested) {
+      onEditStatementHandled?.();
+    }
+  }, [editStatementRequested, isAuthor, request?.type, onEditStatementHandled]);
+
   return (
-    <div className="relative border-slate-500 dark:border dark:border-slate-950 dark:bg-slate-950">
+    <div
+      id="request-statement"
+      className="relative border-slate-500 dark:border dark:border-slate-950 dark:bg-slate-950"
+    >
       <InitialBubble name={request?.author.fullName} />
       <div className="py-2">
         <div className="text-sm text-slate-800 dark:text-slate-50">

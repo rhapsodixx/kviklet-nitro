@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { userResponseSchema } from "./UserApi";
 import {
+  AiReviewMode,
   connectionResponseSchema,
   databaseConnectionResponseSchema,
 } from "./DatasourceApi";
@@ -15,6 +16,38 @@ import {
 import { ExecutionRequest } from "../routes/NewRequest";
 
 const requestUrl = `${baseUrl}/execution-requests/`;
+
+const aiReviewFindingSchema = z.object({
+  severity: z.string(),
+  category: z.string(),
+  explanation: z.string(),
+  fix: z.string(),
+});
+
+const aiReviewAttemptSchema = z.object({
+  status: z.string(),
+  summary: z.string().nullable().optional(),
+  findings: z.array(aiReviewFindingSchema),
+  suggestedSql: z.string().nullable().optional(),
+  model: z.string().nullable().optional(),
+  promptPolicyVersion: z.string().nullable().optional(),
+  errorCategory: z.string().nullable().optional(),
+  createdAt: z.coerce.date(),
+  completedAt: z.coerce.date().nullable().optional(),
+});
+
+const aiReviewOverrideSchema = z.object({
+  reason: z.string(),
+  createdAt: z.coerce.date(),
+  actorName: z.string().nullable().optional(),
+});
+
+const aiReviewDetailFields = {
+  aiReviewMode: z.nativeEnum(AiReviewMode).nullable().optional(),
+  aiReview: aiReviewAttemptSchema.nullable().optional(),
+  aiReviewOverride: aiReviewOverrideSchema.nullable().optional(),
+  aiReviewBlocksExecution: z.boolean().optional(),
+};
 
 const CommentEvent = withType(
   z.object({
@@ -212,6 +245,7 @@ const DatasourceExecutionRequestResponseWithCommentsSchema = withType(
       z.union([ReviewEvent, CommentEvent, EditEvent, ExecuteEvent]),
     ),
     permissions: requestPermissionsSchema,
+    ...aiReviewDetailFields,
   }),
   "DATASOURCE",
 );
@@ -222,6 +256,7 @@ const KubernetesExecutionRequestResponseWithCommentsSchema = withType(
       z.union([ReviewEvent, CommentEvent, EditEvent, ExecuteEvent]),
     ),
     permissions: requestPermissionsSchema,
+    ...aiReviewDetailFields,
   }),
   "KUBERNETES",
 );
@@ -252,6 +287,9 @@ type ExecutionRequestListResponse = z.infer<
 type ExecutionRequestResponse = z.infer<typeof ExecutionRequestResponseSchema>;
 type RoleApprovalProgress = z.infer<typeof RoleApprovalProgressSchema>;
 type ApprovalProgress = z.infer<typeof ApprovalProgressSchema>;
+type AiReviewFinding = z.infer<typeof aiReviewFindingSchema>;
+type AiReviewAttempt = z.infer<typeof aiReviewAttemptSchema>;
+type AiReviewOverride = z.infer<typeof aiReviewOverrideSchema>;
 
 type ChangeExecutionRequestPayload = z.infer<
   typeof ChangeExecutionRequestPayloadSchema
@@ -389,6 +427,37 @@ const getSingleRequest = async (
       credentials: "include",
     },
     ExecutionRequestResponseWithCommentsSchema,
+  );
+};
+
+const retryAiReview = async (
+  id: string,
+): Promise<ApiResponse<AiReviewAttempt>> => {
+  return fetchWithErrorHandling(
+    requestUrl + id + "/ai-review/retry",
+    {
+      method: "POST",
+      credentials: "include",
+    },
+    aiReviewAttemptSchema,
+  );
+};
+
+const overrideAiReview = async (
+  id: string,
+  reason: string,
+): Promise<ApiResponse<AiReviewOverride>> => {
+  return fetchWithErrorHandling(
+    requestUrl + id + "/ai-review/override",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      credentials: "include",
+      body: JSON.stringify({ reason }),
+    },
+    aiReviewOverrideSchema,
   );
 };
 
@@ -650,7 +719,11 @@ export {
   executeCommand,
   streamDump,
   downloadResults,
+  retryAiReview,
+  overrideAiReview,
   DBExecuteResponseResultSchema,
+  aiReviewAttemptSchema,
+  aiReviewOverrideSchema,
 };
 
 export type {
@@ -678,4 +751,7 @@ export type {
   KubernetesExecuteResponse,
   RoleApprovalProgress,
   ApprovalProgress,
+  AiReviewFinding,
+  AiReviewAttempt,
+  AiReviewOverride,
 };

@@ -19,3 +19,13 @@ app:
   version: "dev"
   build-date: "unknown"
   git-commit: "unknown"
+
+kviklet:
+  ai-review:
+    openrouter:
+      api-key:
+      base-url: https://openrouter.ai/api/v1
+    primary-model: qwen/qwen3-coder-plus
+    fallback-model: openai/gpt-4o
+    timeout: 60s
+    max-prompt-chars: 50000

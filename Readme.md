@@ -30,6 +30,7 @@ Kviklet ships with a variety of features that an engineering team needs to manag
 - **Role-Based Review Gates**: Require approvals from specific roles before execution. (Enterprise only)
 - **Role Sync**: Automatically sync user roles from your identity provider groups. (Enterprise only)
 - **API Keys**: Programmatic access to the Kviklet API. (Enterprise only)
+- **AI Query Review**: Optional LLM review of Single Execution SQL on relational connections (Off / Optional / Mandatory).
 
 ## Feature by Database/Connection Type
 
@@ -385,6 +386,51 @@ If a user belongs to multiple roles, a single approval from that user counts tow
 **Example:** A connection requires 3 total approvals including 1 from a DBA and 1 from Security. A user who has both the DBA and Security role approves — this satisfies both role requirements but only counts as 1 of the 3 total approvals needed. Two more approvals from any users are still required.
 
 If your enterprise license expires, existing role-based review requirements remain enforced but can no longer be modified. You can only remove them to fall back to the simple total reviews configuration.
+
+### AI Query Review
+
+AI Query Review runs an asynchronous LLM check on **Single Execution** SQL requests for **relational** datasources (Postgres, MySQL, MariaDB, SQL Server). It does not apply to Temporary Access, MongoDB, or Kubernetes connections.
+
+Configure the mode per connection under Settings → Databases:
+
+| Mode | Behavior |
+| ---- | -------- |
+| **Off** (`DISABLED`) | No AI review. |
+| **Optional** | AI review runs in parallel with human review; execution is not blocked on the AI verdict. |
+| **Mandatory** | Execution waits for an AI `APPROVED` result (or an admin override after `FAILED`). `REJECTED` blocks until the statement is edited and re-reviewed. |
+
+Enable the feature by setting an [OpenRouter](https://openrouter.ai) API key (and optional model overrides). These environment variables map to Spring relaxed binding for `kviklet.ai-review.*`:
+
+```bash
+KVIKLET_AI_REVIEW_OPENROUTER_API_KEY=...
+# optional overrides:
+KVIKLET_AI_REVIEW_PRIMARY_MODEL=qwen/qwen3-coder-plus
+KVIKLET_AI_REVIEW_FALLBACK_MODEL=openai/gpt-4o
+```
+
+| Env var | Property |
+| ------- | -------- |
+| `KVIKLET_AI_REVIEW_OPENROUTER_API_KEY` | `kviklet.ai-review.openrouter.api-key` |
+| `KVIKLET_AI_REVIEW_PRIMARY_MODEL` | `kviklet.ai-review.primary-model` |
+| `KVIKLET_AI_REVIEW_FALLBACK_MODEL` | `kviklet.ai-review.fallback-model` |
+
+Only query metadata is sent to the model (SQL statement, title, description, and engine). Requests use OpenRouter zero-data-retention (ZDR) provider settings. Failed reviews can be retried or overridden by an admin; rejected reviews require an edit.
+
+#### Testing
+
+Automated coverage for AI Query Review is unit/component focused (no Playwright e2e stub for OpenRouter in this suite):
+
+```bash
+cd backend && ./gradlew test --tests '*aireview*' --tests '*AiReview*'
+cd frontend && npm run test -- AiQueryReview
+```
+
+Backend tests require JDK 21.
+
+- **Backend `*aireview*` / `*AiReview*`**: gate logic, OpenRouter client (MockWebServer), service accept/reject/fail/override paths, connection validation, API mapping, and create/edit wiring.
+- **Frontend Vitest `AiQueryReview`**: panel states (pending / approved / rejected / failed), retry/override/edit CTAs (`AiReviewBadge` is not covered by a dedicated test).
+
+A full `@SpringBootTest` + Testcontainers path is not required for local/CI of this feature when Docker is unavailable or incompatible; rely on the suites above. Heavy Playwright e2e against a live OpenRouter mock is intentionally omitted.
 
 ### Roles
 
