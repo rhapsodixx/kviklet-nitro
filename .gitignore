@@ -9,4 +9,5 @@ mariadb-data
 lib
 *.tgz
 .idea
-.aider*.worktrees
+.aider*
+.worktrees
